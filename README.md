@@ -37,24 +37,60 @@ npx tsc --noEmit        # type-check
 | Control room / workspace (`/console`) | `src/routes/console.tsx` |
 | App shell, `<head>`, providers | `src/routes/__root.tsx` |
 | Login/register form | `src/components/operator-console.tsx` |
-| Typed API client (browser → `/api`) | `src/lib/api.ts` |
-| In-app auth backend | `src/server-api.ts` |
-| Worker entry (routes `/api/*`, then SSR) | `src/server.ts` |
+| Auth + typed API client | `src/lib/api.ts` |
+| Supabase browser client | `src/integrations/supabase/client.ts` |
+| Provider OAuth (Google) | `src/integrations/supabase/oauth.ts` |
+| `/api/*` stub (JSON 404) | `src/server-api.ts` |
+| Worker entry (SSR + error wrapper) | `src/server.ts` |
 | Generated route tree (do not hand-edit) | `src/routeTree.gen.ts` |
+
+## Auth
+
+Sign-in runs **browser → Supabase Auth** directly; there is no server-side auth
+code in this repo.
+
+- Email/password: `supabase.auth.signInWithPassword` / `signUp`, wrapped by
+  `login()` and `register()` in `src/lib/api.ts`.
+- Google: `src/integrations/supabase/oauth.ts`. Enable the provider and add your
+  deployed origin as a redirect URL under **Authentication → Providers** in the
+  Supabase dashboard, or the callback is rejected.
+- `__root.tsx` subscribes to `supabase.auth.onAuthStateChange` and routes the
+  user on return from the OAuth redirect.
 
 ## The `/api` split
 
-- **Dev** (`bun run dev`): `vite.config.ts` proxies `/api` → `http://localhost:8000`
-  (the separate FastAPI backend). Override with `VITE_API_PROXY_TARGET`.
-- **Prod**: no proxy — `src/server-api.ts` serves `/api/*` from the Worker.
+This app ships **no backend**. `src/server-api.ts` answers every `/api/*` request
+with a JSON 404 so client data calls fail predictably instead of parsing an HTML
+error page. Point `VITE_API_BASE` at a real backend to enable project/run data.
 
-Only auth is implemented in-app (`/api/auth/login`, `/register`, `/logout`,
-`GET /api/auth/me`), using a stateless HMAC-SHA256 signed `HttpOnly` cookie
-(`agentlab_session`). Set `SESSION_SECRET` to override the signing secret.
-Project and run endpoints return a clean JSON 404 — they need persistence and
-live in the FastAPI backend.
+In dev, `vite.config.ts` proxies `/api` → `http://localhost:8000`; override with
+`VITE_API_PROXY_TARGET`.
 
 ## Environment
 
-Copy `.env.example` to `.env` and fill it in. `.env` is gitignored — never
-commit real keys.
+Copy `.env.example` to `.env` and fill it in. `.env` is gitignored — never commit
+real keys.
+
+`VITE_*` values are **inlined into the client bundle at build time**, not read at
+runtime, so they must be present when you build. Only put publishable keys there.
+
+## Deploy (Cloudflare Workers)
+
+The build already targets Workers — Nitro emits `.output/server/wrangler.json`
+with the asset binding and compatibility flags set, so no `wrangler.toml` is
+needed.
+
+```bash
+npm install
+npx wrangler login                 # once
+
+VITE_SUPABASE_URL=… \
+VITE_SUPABASE_PUBLISHABLE_KEY=… \
+VITE_SUPABASE_PROJECT_ID=… \
+  npm run build
+
+npx wrangler deploy --config .output/server/wrangler.json
+```
+
+Then add the resulting `*.workers.dev` origin to Supabase's redirect allow-list,
+or OAuth sign-in will fail on the deployed site.

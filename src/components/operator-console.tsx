@@ -17,7 +17,7 @@ import { toast } from "sonner";
 import { useNavigate } from "@tanstack/react-router";
 
 import { ApiError, login as apiLogin, register as apiRegister } from "@/lib/api";
-import { lovable } from "@/integrations/lovable/index";
+import { oauth } from "@/integrations/supabase/oauth";
 import { Route as AuthRoute } from "@/routes/auth";
 
 const REDIRECT_STORAGE_KEY = "agentlab.postAuthRedirect";
@@ -274,10 +274,9 @@ export function OperatorConsole() {
       } catch {
         // ignore storage errors
       }
-      // See `integrations/lovable/index.ts` for what this does — it runs the
-      // OAuth handshake and then writes the resulting tokens into Supabase's
-      // session store.
-      const result = await lovable.auth.signInWithOAuth("google", {
+      // Hands off to Supabase Auth, which runs the OAuth handshake and writes
+      // the resulting session itself.
+      const result = await oauth.signInWithOAuth("google", {
         redirect_uri: window.location.origin,
       });
       if (result.error) {

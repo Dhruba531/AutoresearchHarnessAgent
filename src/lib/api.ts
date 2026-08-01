@@ -49,7 +49,7 @@ const API_BASE_STORAGE_KEY = "agentlab_api_base";
 
 // Normalise a base URL: drop surrounding whitespace (users paste URLs with
 // stray spaces) and any single trailing slash, so joining `base + "/api/x"`
-// cannot produce a double slash. Same reasoning as `getBase` in lib/mcp/client.ts.
+// cannot produce a double slash.
 function trimBase(u: string): string {
   return u.trim().replace(/\/$/, "");
 }
@@ -143,7 +143,6 @@ export class ApiError extends Error {
  * Note this is a promise, not a guarantee: nothing validates that the server
  * actually sent a `UserOut`. The final `JSON.parse(text) as T` is an unchecked
  * assertion. That is a deliberate trade-off for concision here — contrast
- * `lib/mcp/tools/get-project.ts`, where zod validates input at runtime.
  *
  * Not exported: it is internal plumbing, and every endpoint below wraps it.
  */
@@ -160,7 +159,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     // replaces the merged headers object above rather than adding to it — the
     // Content-Type default is silently lost. The `...(init.headers ?? {})` on
     // the line above compensates by merging them in first, so the common case
-    // works. Compare `lib/mcp/client.ts`, which avoids the hazard entirely by
+    // works. The alternative is to avoid the hazard entirely by
     // spreading `init` first and its merged headers last.
     ...init,
   });
