@@ -1,4 +1,4 @@
-// Failure taxonomy — harness.md §"Failure Taxonomy". Breakdown of why
+// Failure taxonomy. Breakdown of why
 // candidates died, plus failure type by iteration.
 //
 // Two charts side by side, answering two different questions:

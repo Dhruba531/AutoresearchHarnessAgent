@@ -1,5 +1,4 @@
-// Search controller — harness.md §"Search → Exploration Control" and
-// §"Scaling → Compute Budgets". Start/stop, budgets, exploration rate,
+// Search controller. Start/stop, budgets, exploration rate,
 // edit-family weights, stopping criteria, and live campaign vitals.
 //
 // The most COMPLEX FORM in the campaign folder, and the one that spends money —

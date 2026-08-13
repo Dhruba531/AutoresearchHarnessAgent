@@ -451,7 +451,7 @@ export interface HealthOut {
 export const health = () => request<HealthOut>("/health");
 
 // ---- Auth -----------------------------------------------------------------
-// Auth is handled by Lovable Cloud (email/password + Google), independently of
+// Auth is handled by Supabase (email/password + Google), independently of
 // the research runner backend, so operators can sign in even when the FastAPI
 // runner is offline.
 
@@ -824,7 +824,7 @@ export function openRunLogs(runId: number, onEvent: (ev: LogEvent) => void): Web
 }
 
 // ─── Campaigns / candidates / archive (autoresearch search harness) ─────────
-// Mirrors harness.md: Search, Memory→Archive/Ledger, Evaluation→Pareto,
+// Covers: Search, Memory→Archive/Ledger, Evaluation→Pareto,
 // Trace Evaluation, Failure Taxonomy, Agent Evaluation, Safety→Governance.
 //
 // THE LARGEST SECTION IN THIS FILE, and the one behind most of the UI in

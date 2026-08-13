@@ -1,4 +1,4 @@
-// Governance — harness.md §"Safety". Audit status per candidate plus the
+// Governance. Audit status per candidate plus the
 // human-in-the-loop promote / reject gate, behind a confirmation dialog.
 //
 // The first component in this folder that WRITES data rather than only

@@ -1,4 +1,4 @@
-// Leaderboard — harness.md §"Metrics Table". Sortable archive view with links
+// Leaderboard. Sortable archive view with links
 // through to each candidate's detail page.
 //
 // A GOOD FILE TO LEARN FROM. It is self-contained and demonstrates most of the

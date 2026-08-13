@@ -1,4 +1,4 @@
-// Unified diff renderer for candidate edits (harness.md §"Archive").
+// Unified diff renderer for candidate edits.
 //
 // Renders a git-style patch with syntax colouring. Short, but it contains
 // several details that are easy to get wrong, so it is worth reading closely if

@@ -1,4 +1,4 @@
-// Agent evaluation tile — harness.md §"Agent Evaluation". Judges the searcher,
+// Agent evaluation tile. Judges the searcher,
 // not the artifact: hit rate, invalid rate, time-to-best, useful regressions.
 //
 // The smallest component in this folder, and a clean example of the shape most

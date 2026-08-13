@@ -102,19 +102,11 @@ function ChangelogPage() {
             <Link to="/" className="hover:text-foreground">
               Home
             </Link>
-            {/* ⚠ KNOWN TYPE ERROR (pre-existing, line ~83).
-                The /console route declares a `tl` search param, so `search`
-                must be `{ tl: string | undefined }`. Passing `{}` does not
-                satisfy that and `tsc --noEmit` reports it here.
-
-                It still works at runtime — an absent param reads as undefined
-                either way — so this is a type-level failure only. The fix is
-                `search={{ tl: undefined }}`, which is exactly what
-                `campaigns.index.tsx` already does. The same mistake appears in
-                `index.tsx` around line 195; those two are the only type errors
-                in the project. Left as-is here to keep this pass
-                comments-only. */}
-            <Link to="/console" search={{}} className="hover:text-foreground">
+            <Link
+              to="/console"
+              search={{ tl: undefined }}
+              className="hover:text-foreground"
+            >
               Console
             </Link>
           </nav>

@@ -1,4 +1,4 @@
-// Pareto frontier — harness.md §"Pareto Evaluation". Quality against cost, with
+// Pareto frontier. Quality against cost, with
 // non-dominated candidates highlighted and connected.
 //
 // ===========================================================================

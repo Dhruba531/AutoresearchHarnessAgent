@@ -1,6 +1,6 @@
-// Progress curve — harness.md §"Running the loop → Human Review Interface".
-// Best-so-far score over evaluated candidates, with kept / discarded / invalid
-// candidates styled distinctly so stagnation is visible at a glance.
+// Progress curve. Best-so-far score over evaluated candidates, with kept /
+// discarded / invalid candidates styled distinctly so stagnation is visible at
+// a glance.
 //
 // The question this chart answers: IS THE SEARCH STILL MAKING PROGRESS?
 //

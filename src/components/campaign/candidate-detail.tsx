@@ -1,4 +1,4 @@
-// Candidate detail viewer — harness.md §"Archive" and §"Trace Evaluation".
+// Candidate detail viewer.
 // Tabs: Diff · Metrics · Logs · Traces · Notes.
 //
 // The deepest view in the app: everything recorded about one candidate.

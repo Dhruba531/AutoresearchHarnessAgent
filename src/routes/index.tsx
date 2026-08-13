@@ -226,13 +226,7 @@ function Nav() {
             </Link>
             <Link
               to="/console"
-              // ⚠ PRE-EXISTING TYPE ERROR (the second of exactly two in the
-              // project; the other is in `changelog.tsx`). The /console route
-              // declares a `tl` search param, so this should be
-              // `search={{ tl: undefined }}` as in `campaigns.index.tsx`.
-              // Runtime behaviour is unaffected — an absent param reads as
-              // undefined either way — but `tsc --noEmit` reports it.
-              search={{}}
+              search={{ tl: undefined }}
               className="shrink-0 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-95"
             >
               Open console

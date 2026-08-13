@@ -1,4 +1,4 @@
-// Lineage graph — harness.md §"Search → Parent Choice". Parent→child tree of
+// Lineage graph. Parent→child tree of
 // candidates laid out by iteration depth, tagged by edit family.
 //
 // HAND-ROLLED SVG — no charting library. Recharts covers standard plots, but a
