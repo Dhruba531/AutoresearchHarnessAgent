@@ -76,9 +76,26 @@ runtime, so they must be present when you build. Only put publishable keys there
 
 ## Deploy (Cloudflare Workers)
 
-The build already targets Workers — Nitro emits `.output/server/wrangler.json`
-with the asset binding and compatibility flags set, so no `wrangler.toml` is
-needed.
+### From CI (recommended)
+
+`.github/workflows/deploy.yml` builds and deploys on every push to `main`, and
+on demand from any branch via **Actions → Deploy to Cloudflare Workers → Run
+workflow**. Add these repo secrets once, under **Settings → Secrets and
+variables → Actions**:
+
+| Secret | Where to find it |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare dashboard → API Tokens → "Edit Cloudflare Workers" template |
+| `CLOUDFLARE_ACCOUNT_ID` | The dashboard URL, or `wrangler whoami` |
+| `VITE_SUPABASE_URL` | Supabase → Project Settings → API |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Same page — the publishable/anon key, **never** service-role |
+| `VITE_SUPABASE_PROJECT_ID` | The project ref |
+
+CI is the reliable path because some sandboxed environments block outbound
+connections to `api.cloudflare.com`, and `wrangler deploy` then fails with
+`fetch failed` regardless of how valid the token is.
+
+### From a laptop
 
 ```bash
 npm install
@@ -89,8 +106,13 @@ VITE_SUPABASE_PUBLISHABLE_KEY=… \
 VITE_SUPABASE_PROJECT_ID=… \
   npm run build
 
-npx wrangler deploy --config .output/server/wrangler.json
+npm run deploy                     # wrangler deploy, using ./wrangler.jsonc
 ```
+
+Deploy with the committed `wrangler.jsonc`, **not** the
+`.output/server/wrangler.json` that nitro generates. The generated file derives
+the Worker name from the repo directory, so using it publishes a second Worker
+on a different URL — see the comments in `wrangler.jsonc`.
 
 Then add the resulting `*.workers.dev` origin to Supabase's redirect allow-list,
 or OAuth sign-in will fail on the deployed site.

@@ -1,0 +1,88 @@
+# Deploy the Worker to Cloudflare.
+#
+# This workflow exists because a Cloudflare deploy cannot be driven from every
+# environment: some sandboxes (including Claude Code's) sit behind an egress
+# policy that refuses CONNECT to api.cloudflare.com, so `wrangler deploy` fails
+# with "fetch failed" no matter how valid the API token is. GitHub's runners
+# have unrestricted egress, so this is the reliable path.
+#
+# ── One-time setup ────────────────────────────────────────────────────────────
+# Add these under Settings → Secrets and variables → Actions → Secrets:
+#
+#   CLOUDFLARE_API_TOKEN           API token with the "Edit Cloudflare Workers"
+#                                  template (needs Workers Scripts:Edit).
+#   CLOUDFLARE_ACCOUNT_ID          From the Cloudflare dashboard URL, or
+#                                  `wrangler whoami`.
+#   VITE_SUPABASE_URL              e.g. https://<ref>.supabase.co
+#   VITE_SUPABASE_PUBLISHABLE_KEY  The publishable / anon key. NEVER the
+#                                  service-role key — see below.
+#   VITE_SUPABASE_PROJECT_ID       The project ref.
+#
+# ── Why the Supabase values are build inputs, not runtime config ─────────────
+# Vite substitutes `import.meta.env.VITE_*` at BUILD time: the values are baked
+# into the JavaScript bundle, so they must be present in this job's environment
+# and cannot be supplied later as Worker secrets. That also means anything put
+# here ships to every visitor's browser — publishable keys only.
+#
+# They are declared as secrets rather than plain `vars` purely to keep them out
+# of public logs; a publishable key is not confidential, and GitHub would mask
+# it in output either way.
+
+name: Deploy to Cloudflare Workers
+
+on:
+  # Manual runs, from any branch — this is how to deploy the current feature
+  # branch without merging it first.
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+# Serialise deploys and let a newer commit supersede an in-flight one, so two
+# quick pushes cannot race and leave the older build live.
+concurrency:
+  group: deploy-cloudflare
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Without a token there is nothing to deploy WITH, and the job would fail
+    # noisily on every push for anyone who forked the repo. Skipping is the
+    # honest outcome: the run shows as skipped rather than as a false failure.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.repository == 'Dhruba531/AutoresearchHarnessAgent' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # `--frozen-lockfile` fails the build if bun.lock disagrees with
+      # package.json, rather than silently resolving different versions than the
+      # ones that were tested.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # A type error is far cheaper to catch here than to discover on the live
+      # Worker. `vite build` does not type-check on its own — it strips types.
+      - name: Type-check
+        run: bunx tsc --noEmit
+
+      - name: Build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          VITE_SUPABASE_PROJECT_ID: ${{ secrets.VITE_SUPABASE_PROJECT_ID }}
+        run: bun run build
+
+      # `--config wrangler.jsonc` is load-bearing. The build also emits
+      # .output/server/wrangler.json, but that generated file derives the Worker
+      # name from the repo directory, so deploying with it would publish a
+      # SECOND Worker on a different URL. The committed wrangler.jsonc is the
+      # source of truth for the name. See the comments in that file.
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy --config wrangler.jsonc
