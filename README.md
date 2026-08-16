@@ -74,6 +74,36 @@ real keys.
 `VITE_*` values are **inlined into the client bundle at build time**, not read at
 runtime, so they must be present when you build. Only put publishable keys there.
 
+## Deploy (Vercel)
+
+Vercel builds through nitro's `vercel` preset, which emits Build Output API v3
+(`.vercel/output` — `config.json`, `static/`, and `functions/__server.func`).
+SSR is preserved; this is not a static export.
+
+1. vercel.com → **Add New → Project** → import `AutoresearchHarnessAgent`.
+2. Leave every build setting on its default. `vercel.json` already pins the
+   build command, and Vercel picks up `.vercel/output` on its own.
+3. Add the two build-time variables below, then Deploy.
+
+| Variable                        | Notes                       |
+| ------------------------------- | --------------------------- |
+| `VITE_SUPABASE_URL`             | `https://<ref>.supabase.co` |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Publishable/anon key only   |
+
+Both are **inlined at build time**, so changing them needs a redeploy, not a
+restart. Deploying without them is fine — every page still renders and only
+sign-in is disabled, with an on-screen note saying why.
+
+Afterwards add the assigned `*.vercel.app` origin to Supabase under
+**Authentication → URL Configuration**, or OAuth sign-in is rejected on the
+deployed site.
+
+To build it locally exactly as Vercel does:
+
+```bash
+bun run build:vercel
+```
+
 ## Deploy (Cloudflare Workers)
 
 ### From CI (recommended)
