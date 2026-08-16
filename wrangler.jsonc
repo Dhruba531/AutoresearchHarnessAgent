@@ -2,16 +2,25 @@
   // Deploy config for the Cloudflare Worker this app ships as.
   //
   // `vite build` runs nitro with the `cloudflare-module` preset, which emits its
-  // own .output/server/wrangler.json. That generated file derives the Worker
-  // name from the repo directory — which is NOT the name this app is deployed
-  // under — so deploying with it creates a second Worker on a different URL.
-  // This file is the source of truth instead:
+  // own .output/server/wrangler.json. Deploying with that generated file works
+  // only as long as the checkout directory keeps its current name, since the
+  // preset derives the Worker name from it — rename or re-clone the folder and
+  // the next deploy silently creates a NEW Worker on a new workers.dev URL.
+  // Pinning the name here makes the target explicit and immune to that:
   //
   //   npm run build
   //   npm run deploy        # wrangler deploy, using this config
   //
+  // The name below is this repo's Worker, live at
+  // autoresearch-harness-agent.agentlab.workers.dev.
+  //
+  // Do NOT change it to `agentlab-research-hub`. That is a SEPARATE Worker on
+  // the same account, created 2026-08-01 — eight days before this repository
+  // existed — so it is not built from this codebase. An earlier revision of
+  // this file pointed here, which would have had a deploy overwrite it.
+  //
   // Everything below mirrors what the nitro preset generates, except `name`.
-  "name": "agentlab-research-hub",
+  "name": "autoresearch-harness-agent",
 
   // Nitro's SSR entry. `src/server.ts` is the authored entry; this is the
   // bundled result of it.

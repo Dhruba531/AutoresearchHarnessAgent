@@ -119,5 +119,11 @@ Deploy with the committed `wrangler.jsonc`, **not** the
 the Worker name from the repo directory, so using it publishes a second Worker
 on a different URL — see the comments in `wrangler.jsonc`.
 
-Then add the resulting `*.workers.dev` origin to Supabase's redirect allow-list,
-or OAuth sign-in will fail on the deployed site.
+This repo deploys to the Worker named in `wrangler.jsonc`, live at
+`autoresearch-harness-agent.agentlab.workers.dev`. Note that the same Cloudflare
+account also hosts a Worker called `agentlab-research-hub`; it predates this
+repository and is NOT built from this codebase, so do not point a deploy at it.
+
+Then add the `*.workers.dev` origin to Supabase's redirect allow-list, under
+**Authentication → URL Configuration**, or Google sign-in will fail on the
+deployed site — the callback is rejected for any origin not on that list.
