@@ -63,6 +63,19 @@ export function isSupabaseConfigured(): boolean {
 export const SUPABASE_UNCONFIGURED_MESSAGE =
   "Authentication is not configured for this deployment. Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY, then rebuild.";
 
+/**
+ * The raw credentials, or null when either is missing.
+ *
+ * Exists for the one caller that needs to talk to the Auth REST API directly
+ * rather than through the client — `oauth.ts` reads /auth/v1/settings to find
+ * out which providers are actually configured, and the supabase-js client
+ * exposes no method for that.
+ */
+export function getSupabaseCredentials(): { url: string; key: string } | null {
+  const { url, key } = readSupabaseEnv();
+  return url && key ? { url, key } : null;
+}
+
 function createSupabaseClient() {
   const { url: SUPABASE_URL, key: SUPABASE_PUBLISHABLE_KEY } = readSupabaseEnv();
 

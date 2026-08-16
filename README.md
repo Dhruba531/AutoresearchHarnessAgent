@@ -88,13 +88,13 @@ order is: add the secrets, then merge, and the merge itself deploys.
 
 Add these repo secrets under **Settings → Secrets and variables → Actions**:
 
-| Secret | Where to find it |
-| --- | --- |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare dashboard → API Tokens → "Edit Cloudflare Workers" template |
-| `CLOUDFLARE_ACCOUNT_ID` | The dashboard URL, or `wrangler whoami` |
-| `VITE_SUPABASE_URL` | Supabase → Project Settings → API |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | Same page — the publishable/anon key, **never** service-role |
-| `VITE_SUPABASE_PROJECT_ID` | The project ref |
+| Secret                          | Where to find it                                                       |
+| ------------------------------- | ---------------------------------------------------------------------- |
+| `CLOUDFLARE_API_TOKEN`          | Cloudflare dashboard → API Tokens → "Edit Cloudflare Workers" template |
+| `CLOUDFLARE_ACCOUNT_ID`         | The dashboard URL, or `wrangler whoami`                                |
+| `VITE_SUPABASE_URL`             | Supabase → Project Settings → API                                      |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Same page — the publishable/anon key, **never** service-role           |
+| `VITE_SUPABASE_PROJECT_ID`      | The project ref                                                        |
 
 CI is the reliable path because some sandboxed environments block outbound
 connections to `api.cloudflare.com`, and `wrangler deploy` then fails with
