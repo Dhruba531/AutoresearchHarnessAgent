@@ -116,3 +116,23 @@ on a different URL — see the comments in `wrangler.jsonc`.
 
 Then add the resulting `*.workers.dev` origin to Supabase's redirect allow-list,
 or OAuth sign-in will fail on the deployed site.
+
+### On Railway (Node server)
+
+Cloudflare Workers is the primary target, but the same source also builds as a
+plain Node server — useful for any host that runs a long-lived process, and for
+environments where Cloudflare's API is unreachable.
+
+```bash
+bun run build:node      # NITRO_PRESET=node-server vite build
+bun run start           # node .output/server/index.mjs, honours PORT/HOST
+```
+
+`railway.json` wires those two commands up for Railway. Nothing about the
+Cloudflare path changes: `NITRO_PRESET` overrides the `defaultPreset` set in
+`vite.config.ts`, so a plain `bun run build` still emits the Worker bundle.
+
+Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, and
+`VITE_SUPABASE_PROJECT_ID` as service variables before the build runs — they are
+inlined at build time, so adding them later requires a redeploy, not a restart.
+Without them the site still serves every page; only sign-in is disabled.
