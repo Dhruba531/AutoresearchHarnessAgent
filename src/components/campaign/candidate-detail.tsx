@@ -99,10 +99,18 @@ export function CandidateDetail({
                 no frontend change. The `?? {}` guards against a null field:
                 `Object.entries(null)` throws. */}
             {Object.entries(candidate.cost_vector ?? {}).map(([k, v]) => (
-              <Metric key={k} label={k} value={k === "usd" ? fmtUsd(v ?? null) : fmtNum(v ?? null, 2)} />
+              <Metric
+                key={k}
+                label={k}
+                value={k === "usd" ? fmtUsd(v ?? null) : fmtNum(v ?? null, 2)}
+              />
             ))}
             {Object.entries(candidate.metrics ?? {}).map(([k, v]) => (
-              <Metric key={k} label={k} value={typeof v === "number" ? fmtNum(v) : String(v ?? "—")} />
+              <Metric
+                key={k}
+                label={k}
+                value={typeof v === "number" ? fmtNum(v) : String(v ?? "—")}
+              />
             ))}
           </div>
         </TabsContent>
@@ -320,7 +328,9 @@ function TreeNode({ node, depth }: { node: TraceFileNode; depth: number }) {
           renders nothing further. `depth + 1` indents the next level. Keyed by
           `path`, which is unique across the whole tree — unlike `name`, which
           repeats across directories. */}
-      {node.children?.map((c) => <TreeNode key={c.path} node={c} depth={depth + 1} />)}
+      {node.children?.map((c) => (
+        <TreeNode key={c.path} node={c} depth={depth + 1} />
+      ))}
     </li>
   );
 }

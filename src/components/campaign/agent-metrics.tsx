@@ -58,7 +58,11 @@ export function AgentMetricsTile({ metrics }: { metrics: AgentMetrics | null | u
           label="time to best"
           // Not a percentage, so it formats separately: one decimal place and
           // an "m" suffix for minutes.
-          value={metrics?.time_to_best_minutes != null ? `${fmtNum(metrics.time_to_best_minutes, 1)}m` : "—"}
+          value={
+            metrics?.time_to_best_minutes != null
+              ? `${fmtNum(metrics.time_to_best_minutes, 1)}m`
+              : "—"
+          }
           hint="wall clock to incumbent"
         />
         <Stat

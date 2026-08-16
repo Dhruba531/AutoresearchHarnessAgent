@@ -242,10 +242,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     ],
   }),
   // The four component slots this route fills:
-  shellComponent: RootShell,          // the <html> document itself
-  component: RootComponent,           // wraps every page's content
+  shellComponent: RootShell, // the <html> document itself
+  component: RootComponent, // wraps every page's content
   notFoundComponent: NotFoundComponent, // no route matched
-  errorComponent: ErrorComponent,       // a route threw
+  errorComponent: ErrorComponent, // a route threw
 });
 
 /**

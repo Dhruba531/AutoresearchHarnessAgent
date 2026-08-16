@@ -12,8 +12,8 @@
 // that single method name is what decides which side of the wire each file runs
 // on.
 
-import { createMiddleware } from '@tanstack/react-start'
-import { supabase, isSupabaseConfigured } from './client'
+import { createMiddleware } from "@tanstack/react-start";
+import { supabase, isSupabaseConfigured } from "./client";
 
 // Must be registered as a global `functionMiddleware` in `src/start.ts`; otherwise
 // the browser never attaches the bearer token to serverFn RPCs.
@@ -22,21 +22,21 @@ import { supabase, isSupabaseConfigured } from './client'
 // server function gets the token automatically. That is why the ~95 functions in
 // `src/lib/api.ts` can each assume an authenticated caller without a single one
 // of them repeating this code.
-export const attachSupabaseAuth = createMiddleware({ type: 'function' }).client(
+export const attachSupabaseAuth = createMiddleware({ type: "function" }).client(
   async ({ next }) => {
     // Without credentials there is no session to read and `supabase.auth`
     // throws. Continue unauthenticated — exactly what this middleware already
     // does for a signed-out user, per the note on the empty headers below.
-    if (!isSupabaseConfigured()) return next({ headers: {} })
+    if (!isSupabaseConfigured()) return next({ headers: {} });
 
     // `getSession()` reads the session Supabase persisted in localStorage (see
     // `persistSession: true` in client.ts). It does not hit the network, so
     // this adds no latency to the call it is wrapping.
-    const { data } = await supabase.auth.getSession()
+    const { data } = await supabase.auth.getSession();
 
     // Optional chaining, because a signed-out user has no session at all —
     // `data.session` is null and this yields undefined rather than throwing.
-    const token = data.session?.access_token
+    const token = data.session?.access_token;
 
     // `next()` continues to the actual server function; whatever headers we
     // pass here are merged into the outgoing request.
@@ -48,6 +48,6 @@ export const attachSupabaseAuth = createMiddleware({ type: 'function' }).client(
       // "Bearer" is the standard scheme name from RFC 6750; the server checks
       // for that exact prefix.
       headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
+    });
   },
-)
+);

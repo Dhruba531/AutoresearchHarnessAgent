@@ -25,15 +25,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { LeaderboardRow } from "@/lib/api";
-import {
-  Chip,
-  EmptyState,
-  Panel,
-  PanelHead,
-  StatusPill,
-  fmtNum,
-  fmtUsd,
-} from "./primitives";
+import { Chip, EmptyState, Panel, PanelHead, StatusPill, fmtNum, fmtUsd } from "./primitives";
 
 // Only the columns that can be sorted. Deriving this union from the sortable
 // fields (rather than allowing any string) means `a[sort]` below is a checked
@@ -187,7 +179,10 @@ export function LeaderboardTable({ rows }: { rows: LeaderboardRow[] }) {
       {view.length === 0 ? (
         // Note the hint explains WHY it is empty and what will fill it —
         // far more useful than a bare "No data".
-        <EmptyState label="the ledger is empty" hint="Candidates appear as the proposer evaluates edits." />
+        <EmptyState
+          label="the ledger is empty"
+          hint="Candidates appear as the proposer evaluates edits."
+        />
       ) : (
         // Constrained height plus `overflow-auto` makes the table body scroll
         // inside the panel instead of stretching the page.

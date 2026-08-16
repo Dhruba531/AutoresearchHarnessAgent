@@ -6,8 +6,8 @@
 //
 // The interesting part of this file is the Proxy at the bottom.
 
-import { createClient } from '@supabase/supabase-js';
-import type { Database } from './types';
+import { createClient } from "@supabase/supabase-js";
+import type { Database } from "./types";
 
 // Use import.meta.env for client-side (Vite build-time replacement)
 // Fall back to process.env for SSR (server-side rendering)
@@ -76,10 +76,10 @@ function createSupabaseClient() {
     // only when that variable is absent. It is a common way to build an array
     // conditionally without `if` statements or `.filter(Boolean)`.
     const missing = [
-      ...(!SUPABASE_URL ? ['SUPABASE_URL'] : []),
-      ...(!SUPABASE_PUBLISHABLE_KEY ? ['SUPABASE_PUBLISHABLE_KEY'] : []),
+      ...(!SUPABASE_URL ? ["SUPABASE_URL"] : []),
+      ...(!SUPABASE_PUBLISHABLE_KEY ? ["SUPABASE_PUBLISHABLE_KEY"] : []),
     ];
-    const message = `Missing Supabase environment variable(s): ${missing.join(', ')}. Set them in your .env.`;
+    const message = `Missing Supabase environment variable(s): ${missing.join(", ")}. Set them in your .env.`;
     // Logged AND thrown deliberately: the log guarantees it reaches the console
     // even if some caller swallows the exception.
     console.error(`[Supabase] ${message}`);
@@ -96,14 +96,14 @@ function createSupabaseClient() {
       // `localStorage` only exists in a browser. During SSR we pass `undefined`,
       // which tells Supabase not to persist anything — correct, since the server
       // has no single user to store a session for.
-      storage: typeof window !== 'undefined' ? localStorage : undefined,
+      storage: typeof window !== "undefined" ? localStorage : undefined,
       // Keeps the session in storage across page reloads, so users are not
       // signed out every time they refresh.
       persistSession: true,
       // Refreshes the access token in the background before it expires, so long
       // sessions do not suddenly start failing with 401s.
       autoRefreshToken: true,
-    }
+    },
   });
 }
 
@@ -145,4 +145,3 @@ export const supabase = new Proxy({} as ReturnType<typeof createSupabaseClient>,
     return Reflect.get(_supabase, prop, receiver);
   },
 });
-

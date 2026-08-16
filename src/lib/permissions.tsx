@@ -148,8 +148,7 @@ export function normaliseRole(input: string | null | undefined): Role {
   if (s === "admin" || s === "owner" || s === "superuser") return "admin";
   if (s === "operator" || s === "user" || s === "member") return "operator";
   if (s === "reviewer" || s === "approver") return "reviewer";
-  if (s === "viewer" || s === "readonly" || s === "read-only" || s === "guest")
-    return "viewer";
+  if (s === "viewer" || s === "readonly" || s === "read-only" || s === "guest") return "viewer";
   return "admin"; // ⚠ unrecognised role → full access. Change to "viewer" to fail closed.
 }
 

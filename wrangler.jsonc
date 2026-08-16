@@ -26,7 +26,7 @@
   // expects at runtime — renaming it breaks asset serving.
   "assets": {
     "binding": "ASSETS",
-    "directory": ".output/public"
+    "directory": ".output/public",
   },
 
   // nitro has already bundled everything; running it through wrangler's bundler
@@ -35,7 +35,7 @@
   "rules": [
     {
       "type": "ESModule",
-      "globs": ["**/*.mjs", "**/*.js"]
-    }
-  ]
+      "globs": ["**/*.mjs", "**/*.js"],
+    },
+  ],
 }

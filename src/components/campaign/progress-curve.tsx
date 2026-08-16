@@ -109,7 +109,10 @@ export function ProgressCurve({ candidates }: { candidates: CandidateOut[] }) {
         meta={<Chip tone="success">best {fmtNum(best)}</Chip>}
       />
       {data.length === 0 ? (
-        <EmptyState label="no evaluated candidates yet" hint="The curve appears once the proposer completes its first evaluation." />
+        <EmptyState
+          label="no evaluated candidates yet"
+          hint="The curve appears once the proposer completes its first evaluation."
+        />
       ) : (
         // Fixed height, required by ResponsiveContainer — see pareto-chart.tsx.
         <div className="h-[300px] px-3 py-5">

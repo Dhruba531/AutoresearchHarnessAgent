@@ -79,7 +79,10 @@ export function ParetoChart({ points }: { points: FrontierPoint[] }) {
         meta={<Chip tone="success">{frontier.length} on frontier</Chip>}
       />
       {points.length === 0 ? (
-        <EmptyState label="no frontier yet" hint="Needs at least one scored candidate with a cost vector." />
+        <EmptyState
+          label="no frontier yet"
+          hint="Needs at least one scored candidate with a cost vector."
+        />
       ) : (
         // A FIXED PIXEL HEIGHT on the wrapper is mandatory for Recharts.
         // `ResponsiveContainer` sizes itself to its parent, so if the parent

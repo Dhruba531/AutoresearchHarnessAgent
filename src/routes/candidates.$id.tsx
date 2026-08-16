@@ -73,7 +73,10 @@ function CandidatePage() {
   //
   // `isLoading: traceLoading` renames the destructured field, which is how you
   // pull the same property from two hooks without a name collision.
-  const { data: trace, isLoading: traceLoading } = useCandidateTrace(candidateId, Boolean(candidate));
+  const { data: trace, isLoading: traceLoading } = useCandidateTrace(
+    candidateId,
+    Boolean(candidate),
+  );
 
   if (isLoading) {
     return (
@@ -93,7 +96,10 @@ function CandidatePage() {
           <p className="mt-2 text-[13px] text-muted-foreground">
             {error instanceof Error ? error.message : "The archive did not return this candidate."}
           </p>
-          <Link to="/campaigns" className="mt-4 inline-block font-mono text-[12px] text-primary hover:underline">
+          <Link
+            to="/campaigns"
+            className="mt-4 inline-block font-mono text-[12px] text-primary hover:underline"
+          >
             ← back to campaigns
           </Link>
         </div>
@@ -133,7 +139,10 @@ function CandidatePage() {
             is built from `candidate.campaign_id`, so the trail reflects this
             candidate's actual parent rather than wherever the user came from. */}
         <div className="mx-auto flex h-16 max-w-[1400px] flex-wrap items-center gap-3 px-6">
-          <Link to="/campaigns" className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground">
+          <Link
+            to="/campaigns"
+            className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground"
+          >
             campaigns
           </Link>
           <span className="text-muted-foreground/40">/</span>

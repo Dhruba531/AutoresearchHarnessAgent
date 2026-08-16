@@ -23,12 +23,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
-import {
-  startCampaign,
-  stopCampaign,
-  type CampaignBudget,
-  type CampaignOut,
-} from "@/lib/api";
+import { startCampaign, stopCampaign, type CampaignBudget, type CampaignOut } from "@/lib/api";
 import { Chip, Panel, PanelHead, Stat, fmtNum, fmtUsd } from "./primitives";
 
 // The kinds of change the proposer can make. Exported so other surfaces can
@@ -184,7 +179,11 @@ export function SearchController({
             value={`${campaign.iteration}${cap.max_iters ? ` / ${cap.max_iters}` : ""}`}
             hint={`stagnation ${campaign.metrics?.stagnation_counter ?? 0}`}
           />
-          <Stat label="best score" value={fmtNum(campaign.best_score)} hint={campaign.best_candidate_id ? `c${campaign.best_candidate_id}` : "—"} />
+          <Stat
+            label="best score"
+            value={fmtNum(campaign.best_score)}
+            hint={campaign.best_candidate_id ? `c${campaign.best_candidate_id}` : "—"}
+          />
           <Stat
             label="invalid rate"
             value={`${Math.round((campaign.metrics?.invalid_rate ?? 0) * 100)}%`}
@@ -218,14 +217,18 @@ export function SearchController({
           <Field label="max iterations">
             <NumberInput
               value={draft.maxIters}
-              onChange={(v) => setDraft((d) => ({ ...d, maxIters: v, budget: { ...d.budget, max_iters: v } }))}
+              onChange={(v) =>
+                setDraft((d) => ({ ...d, maxIters: v, budget: { ...d.budget, max_iters: v } }))
+              }
               disabled={live}
             />
           </Field>
           <Field label="wall clock (min)">
             <NumberInput
               value={draft.budget.wall_clock_minutes ?? 0}
-              onChange={(v) => setDraft((d) => ({ ...d, budget: { ...d.budget, wall_clock_minutes: v } }))}
+              onChange={(v) =>
+                setDraft((d) => ({ ...d, budget: { ...d.budget, wall_clock_minutes: v } }))
+              }
               disabled={live}
             />
           </Field>

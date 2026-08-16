@@ -151,7 +151,6 @@ export class ApiError extends Error {
  * Not exported: it is internal plumbing, and every endpoint below wraps it.
  */
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-
   const base = getApiBase();
   const res = await fetch(`${base}${path}`, {
     // Send cookies even on cross-origin requests. This is what carries the
@@ -385,7 +384,6 @@ export interface RunOut {
   ended_at: string | null;
 }
 
-
 export interface ReviewFindingOut {
   id?: number;
   run_id?: number;
@@ -442,7 +440,6 @@ export interface ProviderKeyTestOut {
   detail: string;
   tested_at: string;
 }
-
 
 export interface HealthOut {
   ok: boolean;
@@ -578,7 +575,6 @@ export async function me(): Promise<UserOut | null> {
   return toUserOut(data.user);
 }
 
-
 // ---- Provider keys --------------------------------------------------------
 // CRUD for the user's LLM provider API keys (OpenAI, Anthropic, …).
 //
@@ -605,7 +601,6 @@ export const deleteProviderKey = (provider: ProviderId) =>
 
 export const testProviderKey = (provider: ProviderId) =>
   request<ProviderKeyTestOut>(`/api/provider-keys/${provider}/test`, { method: "POST" });
-
 
 // ---- System status --------------------------------------------------------
 // Live operator metrics: queue depth, throughput, spend. This is the same data
@@ -726,10 +721,7 @@ export interface GroundednessReport {
   [k: string]: unknown;
 }
 
-export const approveFinal = (
-  projectId: number,
-  opts: { notes?: string; force?: boolean } = {},
-) =>
+export const approveFinal = (projectId: number, opts: { notes?: string; force?: boolean } = {}) =>
   request<{ artifact_id?: number; markdown?: string; [k: string]: unknown }>(
     `/api/projects/${projectId}/final/approve`,
     {
@@ -740,7 +732,6 @@ export const approveFinal = (
       }),
     },
   );
-
 
 // ---- Targeted paper revisions (gate G3) -----------------------------------
 // Request a specific edit to the generated paper instead of regenerating it.
@@ -888,13 +879,7 @@ export function openRunLogs(runId: number, onEvent: (ev: LogEvent) => void): Web
 // giving up another, such as cost. Those are the only candidates worth
 // choosing between; everything else is beaten outright on both axes.
 
-export type CampaignStatus =
-  | "queued"
-  | "running"
-  | "paused"
-  | "stopped"
-  | "completed"
-  | "failed";
+export type CampaignStatus = "queued" | "running" | "paused" | "stopped" | "completed" | "failed";
 
 export type EditFamily =
   | "architecture"
@@ -1119,9 +1104,7 @@ export const listCandidates = (
   if (opts.sort) q.set("sort", opts.sort);
   if (opts.filter) q.set("filter", opts.filter);
   const qs = q.toString();
-  return request<CandidateOut[]>(
-    `/api/campaigns/${campaignId}/candidates${qs ? `?${qs}` : ""}`,
-  );
+  return request<CandidateOut[]>(`/api/campaigns/${campaignId}/candidates${qs ? `?${qs}` : ""}`);
 };
 
 export const getCandidate = (candidateId: number) =>

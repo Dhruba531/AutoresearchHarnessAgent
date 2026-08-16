@@ -69,8 +69,6 @@ function AuthPage() {
         }}
       />
 
-
-
       <header className="relative z-10 border-b border-border/40">
         <div className="mx-auto flex max-w-[1400px] items-center justify-between px-6 py-5">
           <Link to="/" className="flex items-baseline gap-2">
@@ -114,9 +112,8 @@ function AuthPage() {
               Sign in to the console.
             </h1>
             <p className="mt-5 max-w-md text-[15px] leading-relaxed text-muted-foreground">
-              Accounts are per-workspace. Your role decides what you can do
-              once you're in — operators start runs, reviewers approve them,
-              viewers can only read.
+              Accounts are per-workspace. Your role decides what you can do once you're in —
+              operators start runs, reviewers approve them, viewers can only read.
             </p>
 
             {/* <dl>/<dt>/<dd> — a DESCRIPTION LIST, the semantically correct
@@ -137,7 +134,6 @@ function AuthPage() {
               ))}
             </dl>
           </div>
-
 
           {/* Form column */}
           <div className="mx-auto min-w-0 w-full max-w-[440px] lg:mx-0">
@@ -160,7 +156,6 @@ function AuthPage() {
       <footer className="relative z-10 border-t border-border/40 py-5 text-center font-mono text-[11px] tracking-wider text-muted-foreground/60">
         agentlab · build 2026.04
       </footer>
-
 
       {/* The toast HOST. `toast.success(...)` calls anywhere in the tree render
           here, so this element must be mounted for any of them to appear —

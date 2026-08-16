@@ -91,7 +91,9 @@
     font-weight: 600;
     letter-spacing: -0.022em;
   }
-  .font-mono { font-family: var(--font-mono); }
+  .font-mono {
+    font-family: var(--font-mono);
+  }
 }
 
 .mono-label {
@@ -130,7 +132,9 @@
   padding: 0.5rem 0.75rem;
   font-size: 0.875rem;
   color: var(--color-muted-foreground);
-  transition: background-color 150ms ease, color 150ms ease;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
 }
 .sidebar-link:hover {
   background: color-mix(in oklab, var(--color-primary) 12%, transparent);
@@ -151,8 +155,6 @@
 .sidebar-link:hover::before {
   height: 60%;
 }
-
-
 
 /* ─── Workspace theme: black / white / blue ──────────────────────────────── */
 .theme-console {

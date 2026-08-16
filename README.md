@@ -31,18 +31,18 @@ npx tsc --noEmit        # type-check
 
 ## Layout
 
-| Concern | File |
-| --- | --- |
-| Landing page | `src/routes/index.tsx` |
-| Control room / workspace (`/console`) | `src/routes/console.tsx` |
-| App shell, `<head>`, providers | `src/routes/__root.tsx` |
-| Login/register form | `src/components/operator-console.tsx` |
-| Auth + typed API client | `src/lib/api.ts` |
-| Supabase browser client | `src/integrations/supabase/client.ts` |
-| Provider OAuth (Google) | `src/integrations/supabase/oauth.ts` |
-| `/api/*` stub (JSON 404) | `src/server-api.ts` |
-| Worker entry (SSR + error wrapper) | `src/server.ts` |
-| Generated route tree (do not hand-edit) | `src/routeTree.gen.ts` |
+| Concern                                 | File                                  |
+| --------------------------------------- | ------------------------------------- |
+| Landing page                            | `src/routes/index.tsx`                |
+| Control room / workspace (`/console`)   | `src/routes/console.tsx`              |
+| App shell, `<head>`, providers          | `src/routes/__root.tsx`               |
+| Login/register form                     | `src/components/operator-console.tsx` |
+| Auth + typed API client                 | `src/lib/api.ts`                      |
+| Supabase browser client                 | `src/integrations/supabase/client.ts` |
+| Provider OAuth (Google)                 | `src/integrations/supabase/oauth.ts`  |
+| `/api/*` stub (JSON 404)                | `src/server-api.ts`                   |
+| Worker entry (SSR + error wrapper)      | `src/server.ts`                       |
+| Generated route tree (do not hand-edit) | `src/routeTree.gen.ts`                |
 
 ## Auth
 

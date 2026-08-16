@@ -12,18 +12,15 @@
 // USER, so RLS still applies. That makes it the safe counterpart to
 // `client.server.ts`, which bypasses RLS entirely.
 
-import { createMiddleware } from '@tanstack/react-start'
-import { getRequest } from '@tanstack/react-start/server'
-import { createClient } from '@supabase/supabase-js'
-import type { Database } from './types'
-
-
+import { createMiddleware } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
+import { createClient } from "@supabase/supabase-js";
+import type { Database } from "./types";
 
 // `.server(...)` — this callback runs only on the server. Compare `.client(...)`
 // in auth-attacher.ts.
-export const requireSupabaseAuth = createMiddleware({ type: 'function' }).server(
+export const requireSupabaseAuth = createMiddleware({ type: "function" }).server(
   async ({ next }) => {
-
     // The publishable (anon) key, NOT the service role key. That choice is what
     // keeps row-level security in force for everything done through the client
     // built below. See client.server.ts for why that distinction matters.
@@ -33,10 +30,10 @@ export const requireSupabaseAuth = createMiddleware({ type: 'function' }).server
     if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
       // Same conditional-spread idiom as the client files; see client.ts.
       const missing = [
-        ...(!SUPABASE_URL ? ['SUPABASE_URL'] : []),
-        ...(!SUPABASE_PUBLISHABLE_KEY ? ['SUPABASE_PUBLISHABLE_KEY'] : []),
+        ...(!SUPABASE_URL ? ["SUPABASE_URL"] : []),
+        ...(!SUPABASE_PUBLISHABLE_KEY ? ["SUPABASE_PUBLISHABLE_KEY"] : []),
       ];
-      const message = `Missing Supabase environment variable(s): ${missing.join(', ')}. Set them in your .env.`;
+      const message = `Missing Supabase environment variable(s): ${missing.join(", ")}. Set them in your .env.`;
       console.error(`[Supabase] ${message}`);
       throw new Error(message);
     }
@@ -59,29 +56,29 @@ export const requireSupabaseAuth = createMiddleware({ type: 'function' }).server
     // ------------------------------------------------------------------
 
     if (!request?.headers) {
-      throw new Error('Unauthorized: No request headers available');
+      throw new Error("Unauthorized: No request headers available");
     }
 
-    const authHeader = request.headers.get('authorization');
+    const authHeader = request.headers.get("authorization");
 
     // No header at all — an unauthenticated caller. Recall the attacher sends
     // `{}` when signed out, which lands here.
     if (!authHeader) {
-      throw new Error('Unauthorized: No authorization header provided');
+      throw new Error("Unauthorized: No authorization header provided");
     }
 
     // Enforce the scheme. Rejecting anything that is not `Bearer ` prevents
     // confusion with other schemes (Basic, Digest) that must not be honoured.
-    if (!authHeader.startsWith('Bearer ')) {
-      throw new Error('Unauthorized: Only Bearer tokens are supported');
+    if (!authHeader.startsWith("Bearer ")) {
+      throw new Error("Unauthorized: Only Bearer tokens are supported");
     }
 
     // Strip the prefix to get the raw JWT. (`replace` with a string argument
     // replaces the first occurrence only, which is what we want here — the
     // `startsWith` check above already guaranteed it is at the front.)
-    const token = authHeader.replace('Bearer ', '');
+    const token = authHeader.replace("Bearer ", "");
     if (!token) {
-      throw new Error('Unauthorized: No token provided');
+      throw new Error("Unauthorized: No token provided");
     }
 
     // Build a per-request client that acts AS THIS USER. The `global.headers`
@@ -109,7 +106,7 @@ export const requireSupabaseAuth = createMiddleware({ type: 'function' }).server
           persistSession: false,
           autoRefreshToken: false,
         },
-      }
+      },
     );
 
     // THE ACTUAL VERIFICATION. Everything above only checked the token's SHAPE;
@@ -123,14 +120,14 @@ export const requireSupabaseAuth = createMiddleware({ type: 'function' }).server
       // past shape-checking, refusing to say *why* a token was rejected
       // (expired? bad signature? unknown user?) gives an attacker nothing to
       // work with.
-      throw new Error('Unauthorized: Invalid token');
+      throw new Error("Unauthorized: Invalid token");
     }
 
     // `sub` ("subject") is the standard JWT claim holding the user's ID. A
     // valid token without one would leave us authenticated as nobody, so treat
     // it as a failure rather than proceeding with an undefined user.
     if (!data.claims.sub) {
-      throw new Error('Unauthorized: No user ID found in token');
+      throw new Error("Unauthorized: No user ID found in token");
     }
 
     // Pass control to the actual server function, injecting the verified
@@ -140,7 +137,7 @@ export const requireSupabaseAuth = createMiddleware({ type: 'function' }).server
     // client-supplied claim you still need to be suspicious of.
     return next({
       context: {
-        supabase,          // RLS-scoped client, ready to query as this user
+        supabase, // RLS-scoped client, ready to query as this user
         userId: data.claims.sub,
         claims: data.claims, // full JWT payload: email, role, expiry, etc.
       },

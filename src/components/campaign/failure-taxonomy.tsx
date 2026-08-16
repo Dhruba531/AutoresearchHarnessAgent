@@ -39,16 +39,7 @@ import { CHART_COLORS, Chip, EmptyState, Panel, PanelHead } from "./primitives";
 //   metric_integrity  — the reported metric could not be trusted
 // The last two matter most: those candidates may have SCORED WELL while being
 // invalid, which is exactly the failure mode automated search is prone to.
-const KINDS = [
-  "syntax",
-  "import",
-  "shape",
-  "oom",
-  "nan",
-  "timeout",
-  "leakage",
-  "metric_integrity",
-];
+const KINDS = ["syntax", "import", "shape", "oom", "nan", "timeout", "leakage", "metric_integrity"];
 
 // Per-kind colours for the stacked chart. Note `color-mix(in oklab, ...)` —
 // CSS's native colour blending, used here to derive extra distinguishable hues
@@ -126,7 +117,10 @@ export function FailureTaxonomy({ candidates }: { candidates: CandidateOut[] }) 
         meta={<Chip tone={invalidCount ? "danger" : "success"}>{invalidCount} invalid</Chip>}
       />
       {invalidCount === 0 ? (
-        <EmptyState label="no failures recorded" hint="Invalid candidates are bucketed here as they occur." />
+        <EmptyState
+          label="no failures recorded"
+          hint="Invalid candidates are bucketed here as they occur."
+        />
       ) : (
         // Stacks on mobile, side by side from `lg` (≥1024px) upward.
         <div className="grid gap-6 px-3 py-5 lg:grid-cols-2">
@@ -141,7 +135,11 @@ export function FailureTaxonomy({ candidates }: { candidates: CandidateOut[] }) 
               <BarChart data={totals} layout="vertical" margin={{ left: 24, right: 16 }}>
                 {/* `horizontal={false}` leaves only vertical gridlines — the
                     ones that help compare bar lengths in this orientation. */}
-                <CartesianGrid stroke={CHART_COLORS.grid} strokeDasharray="2 4" horizontal={false} />
+                <CartesianGrid
+                  stroke={CHART_COLORS.grid}
+                  strokeDasharray="2 4"
+                  horizontal={false}
+                />
                 {/* In a vertical layout the axes swap roles: X carries the
                     numeric count, Y carries the categories. */}
                 <XAxis

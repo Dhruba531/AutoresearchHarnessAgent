@@ -82,7 +82,8 @@ export const Route = createFileRoute("/campaigns/$id")({
       { property: "og:title", content: "Campaign dashboard — AgentLab" },
       {
         property: "og:description",
-        content: "Watch an autoresearch search climb: progress curve, Pareto frontier, and candidate archive.",
+        content:
+          "Watch an autoresearch search climb: progress curve, Pareto frontier, and candidate archive.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -213,7 +214,10 @@ function CampaignDashboard() {
       <Toaster position="top-right" />
       <header className="sticky top-0 z-30 border-b border-panel-border bg-background">
         <div className="mx-auto flex h-16 max-w-[1400px] flex-wrap items-center gap-3 px-6">
-          <Link to="/campaigns" className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground">
+          <Link
+            to="/campaigns"
+            className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground"
+          >
             campaigns
           </Link>
           <span className="text-muted-foreground/40">/</span>
@@ -295,7 +299,10 @@ function SearchTracePanel({ events, live }: { events: SearchTraceEvent[]; live: 
           hint="Events appear while a campaign is running."
         />
       ) : (
-        <div ref={scroller} className="max-h-[420px] overflow-auto px-6 py-4 font-mono text-[12px] leading-[1.7]">
+        <div
+          ref={scroller}
+          className="max-h-[420px] overflow-auto px-6 py-4 font-mono text-[12px] leading-[1.7]"
+        >
           {events.map((ev, i) => (
             <div key={i} className="flex gap-3">
               <span className="shrink-0 text-muted-foreground/50">

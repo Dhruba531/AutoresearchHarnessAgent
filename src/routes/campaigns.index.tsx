@@ -17,7 +17,15 @@ import { Toaster, toast } from "sonner";
 import { WorkspaceTheme } from "@/components/workspace-theme";
 import { listProjects, me, type CampaignOut, type ProjectOut } from "@/lib/api";
 import { useCampaigns } from "@/lib/campaign-queries";
-import { Chip, EmptyState, Panel, PanelHead, StatusPill, fmtNum, fmtUsd } from "@/components/campaign/primitives";
+import {
+  Chip,
+  EmptyState,
+  Panel,
+  PanelHead,
+  StatusPill,
+  fmtNum,
+  fmtUsd,
+} from "@/components/campaign/primitives";
 import { SearchController } from "@/components/campaign/search-controller";
 
 export const Route = createFileRoute("/campaigns/")({
@@ -92,11 +100,17 @@ function CampaignsPage() {
       <Toaster position="top-right" />
       <header className="sticky top-0 z-30 border-b border-panel-border bg-background">
         <div className="mx-auto flex h-16 max-w-[1400px] items-center gap-4 px-6">
-          <Link to="/console" search={{ tl: undefined }} className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground">
+          <Link
+            to="/console"
+            search={{ tl: undefined }}
+            className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground"
+          >
             console
           </Link>
           <span className="text-muted-foreground/40">/</span>
-          <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-foreground">campaigns</span>
+          <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-foreground">
+            campaigns
+          </span>
           <div className="ml-auto flex items-center gap-3">
             {/* `?? ""` because a controlled <select> needs a defined value —
                 passing null would make React treat it as uncontrolled and warn.
@@ -121,10 +135,12 @@ function CampaignsPage() {
       <div className="mx-auto max-w-[1400px] space-y-6 px-6 py-8">
         <div>
           <div className="mono-label">autoresearch · search harness</div>
-          <h1 className="mt-2 font-serif text-3xl tracking-tight text-foreground">Search campaigns</h1>
+          <h1 className="mt-2 font-serif text-3xl tracking-tight text-foreground">
+            Search campaigns
+          </h1>
           <p className="mt-2 max-w-2xl text-[14px] leading-relaxed text-muted-foreground">
-            A campaign runs the propose → edit → evaluate loop under hard compute caps, writing every
-            candidate to the archive so improvements can be audited, not just admired.
+            A campaign runs the propose → edit → evaluate loop under hard compute caps, writing
+            every candidate to the archive so improvements can be audited, not just admired.
           </p>
         </div>
 
