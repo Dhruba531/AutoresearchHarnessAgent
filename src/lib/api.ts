@@ -40,7 +40,11 @@
 // `openSearchTrace` near the bottom use WebSockets rather than fetch, and the
 // Auth section routes through Supabase instead of the FastAPI backend.
 
-import { supabase } from "@/integrations/supabase/client";
+import {
+  supabase,
+  isSupabaseConfigured,
+  SUPABASE_UNCONFIGURED_MESSAGE,
+} from "@/integrations/supabase/client";
 import type { User } from "@supabase/supabase-js";
 
 // The localStorage key holding a user-configured backend URL. Named as a
@@ -493,8 +497,25 @@ function toUserOut(u: User): UserOut {
   };
 }
 
+/**
+ * Guard for the five functions below: without Supabase credentials there is no
+ * identity provider to talk to, and touching `supabase.auth` throws a raw
+ * configuration error naming environment variables.
+ *
+ * 503 rather than 401 is the meaningful distinction: 401 says "those
+ * credentials are wrong", which would send the user off retyping a correct
+ * password forever. 503 says the service itself is unavailable — and because
+ * `submitLogin` in `components/operator-console.tsx` renders any `ApiError`
+ * message in the form's error slot, the operator reads exactly what an admin
+ * needs to fix.
+ */
+function assertAuthConfigured(): void {
+  if (!isSupabaseConfigured()) throw new ApiError(503, SUPABASE_UNCONFIGURED_MESSAGE);
+}
+
 /** Sign in with email and password. Throws `ApiError(401)` on bad credentials. */
 export async function login(email: string, password: string): Promise<UserOut> {
+  assertAuthConfigured();
   // Supabase returns errors in the result object rather than throwing, so this
   // converts to the throwing convention every other function here follows —
   // otherwise callers would need two different error-handling styles.
@@ -505,6 +526,7 @@ export async function login(email: string, password: string): Promise<UserOut> {
 
 /** Create an account. Throws `ApiError(400)` if the sign-up is rejected. */
 export async function register(name: string, email: string, password: string): Promise<UserOut> {
+  assertAuthConfigured();
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
@@ -527,6 +549,10 @@ export async function register(name: string, email: string, password: string): P
 
 /** Sign out. Always reports success. */
 export async function logout(): Promise<{ ok: boolean }> {
+  // Nothing to sign out of when auth was never configured. Reported as success
+  // for the same reason the error below is swallowed: the caller's next step is
+  // to clear local state and navigate, and that is correct either way.
+  if (!isSupabaseConfigured()) return { ok: true };
   // Deliberately does not check for an error. If sign-out fails server-side the
   // local session is cleared regardless, and there is nothing useful for a user
   // to do about it — reporting failure here would only trap them in the UI.
@@ -542,6 +568,11 @@ export async function logout(): Promise<{ ok: boolean }> {
  * write `const user = await me(); if (!user) redirect("/auth")`.
  */
 export async function me(): Promise<UserOut | null> {
+  // "Auth is unconfigured" resolves to the same answer as "nobody is signed
+  // in", and returning it rather than throwing is what makes the `/console`
+  // route guard bounce cleanly to `/auth` — where the sign-in form can explain
+  // the real problem — instead of surfacing a stack trace.
+  if (!isSupabaseConfigured()) return null;
   const { data, error } = await supabase.auth.getUser();
   if (error || !data.user) return null;
   return toUserOut(data.user);

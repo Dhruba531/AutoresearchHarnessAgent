@@ -258,7 +258,6 @@ function ConsolePage() {
     void refreshMeta();
     const id = setInterval(() => void refreshMeta(), 60_000);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authChecked]);
 
   useEffect(() => {

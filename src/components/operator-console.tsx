@@ -18,6 +18,7 @@ import { useNavigate } from "@tanstack/react-router";
 
 import { ApiError, login as apiLogin, register as apiRegister } from "@/lib/api";
 import { oauth } from "@/integrations/supabase/oauth";
+import { isSupabaseConfigured } from "@/integrations/supabase/client";
 import { Route as AuthRoute } from "@/routes/auth";
 
 const REDIRECT_STORAGE_KEY = "agentlab.postAuthRedirect";
@@ -254,6 +255,9 @@ export function OperatorConsole() {
   const registerBusy = registerForm.formState.isSubmitting;
   // Google sign-in is NOT a form submission, so its loading state is manual.
   const [googleBusy, setGoogleBusy] = useState(false);
+  // Computed once per render rather than stored in state: it is derived from
+  // build-time constants and can never change while the page is open.
+  const authAvailable = isSupabaseConfigured();
 
   const signInWithGoogle = async () => {
     setGoogleBusy(true);
@@ -355,12 +359,38 @@ export function OperatorConsole() {
         </div>
       </div>
 
+      {/* Auth-unavailable notice.
+          Shown when the deployment has no Supabase credentials, in which case
+          neither the password form nor the Google button can possibly succeed.
+          Announcing that up front beats letting the operator type a correct
+          password and read a failure afterwards. `role="status"` so a screen
+          reader hears it when it appears.
+
+          `isSupabaseConfigured()` is safe to call during render: the values it
+          reads are inlined at build time, so it returns the same answer on the
+          server and on the client and cannot cause a hydration mismatch. */}
+      {!authAvailable && (
+        <div
+          role="status"
+          className="mt-6 rounded-lg border border-destructive/40 bg-destructive/10 px-3.5 py-3 text-[13px] leading-relaxed text-foreground"
+        >
+          <span className="mono-label block text-destructive">auth unavailable</span>
+          <span className="mt-1.5 block text-muted-foreground">
+            This deployment has no identity provider configured, so sign-in is
+            disabled. An administrator needs to set{" "}
+            <code className="font-mono text-foreground">VITE_SUPABASE_URL</code> and{" "}
+            <code className="font-mono text-foreground">VITE_SUPABASE_PUBLISHABLE_KEY</code> and
+            rebuild.
+          </span>
+        </div>
+      )}
+
       {/* Google sign-in */}
       <div className="mt-6">
         <button
           type="button"
           onClick={signInWithGoogle}
-          disabled={googleBusy || loginBusy || registerBusy}
+          disabled={!authAvailable || googleBusy || loginBusy || registerBusy}
           className="flex w-full items-center justify-center gap-2.5 rounded-lg border border-border bg-background/60 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-background disabled:opacity-70"
         >
           {googleBusy ? (
@@ -438,7 +468,7 @@ export function OperatorConsole() {
 
             <button
               type="submit"
-              disabled={loginBusy}
+              disabled={!authAvailable || loginBusy}
               className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-all hover:opacity-95 disabled:opacity-70"
             >
               {loginBusy ? (
@@ -514,7 +544,7 @@ export function OperatorConsole() {
 
             <button
               type="submit"
-              disabled={registerBusy}
+              disabled={!authAvailable || registerBusy}
               className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-all hover:opacity-95 disabled:opacity-70"
             >
               {registerBusy ? (

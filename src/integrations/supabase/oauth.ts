@@ -8,7 +8,7 @@
 // Configure the provider and its redirect URL in the Supabase dashboard under
 // Authentication → Providers, or the callback will be rejected.
 
-import { supabase } from "./client";
+import { supabase, isSupabaseConfigured, SUPABASE_UNCONFIGURED_MESSAGE } from "./client";
 
 /**
  * `redirect_uri` — where to send the user once the provider approves them.
@@ -28,6 +28,12 @@ export const oauth = {
    * accepted — the compiler catches a typo like "gooogle" immediately.
    */
   signInWithOAuth: async (provider: "google" | "apple" | "azure", opts?: SignInOptions) => {
+    // Returned in the same `{ redirected, error }` shape as a provider refusal,
+    // so the caller's existing failure path renders it — no extra branch, and
+    // no raw configuration error escaping to the console.
+    if (!isSupabaseConfigured()) {
+      return { redirected: false, error: new Error(SUPABASE_UNCONFIGURED_MESSAGE) };
+    }
     const { error } = await supabase.auth.signInWithOAuth({
       provider,
       options: {

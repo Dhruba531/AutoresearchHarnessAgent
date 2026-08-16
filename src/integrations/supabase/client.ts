@@ -9,24 +9,62 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from './types';
 
+// Use import.meta.env for client-side (Vite build-time replacement)
+// Fall back to process.env for SSR (server-side rendering)
+//
+// Two different mechanisms because two different runtimes:
+//
+// `import.meta.env.VITE_*` is not a runtime lookup at all — Vite performs a
+// literal text substitution at BUILD time, so the shipped bundle contains the
+// string value inlined. This is also why the `VITE_` prefix is mandatory:
+// Vite only inlines variables carrying it, which prevents your entire server
+// environment (database passwords included) from being baked into a public
+// JavaScript bundle by accident.
+//
+// `process.env` is a genuine runtime lookup, available only in Node during
+// server-side rendering. The `||` chain tries the build-time value first and
+// falls back to the runtime one, so a single module works in both places.
+//
+// Reading it through one function (rather than inline in the constructor) is
+// what lets `isSupabaseConfigured()` below answer the same question WITHOUT
+// building a client and without throwing.
+function readSupabaseEnv() {
+  // `globalThis.process` rather than a bare `process`: this module is bundled
+  // for the browser too, where `process` is not necessarily defined and a bare
+  // reference is a ReferenceError rather than `undefined`.
+  const runtimeEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+    .process?.env;
+  return {
+    url: import.meta.env.VITE_SUPABASE_URL || runtimeEnv?.SUPABASE_URL,
+    key: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || runtimeEnv?.SUPABASE_PUBLISHABLE_KEY,
+  };
+}
+
+/**
+ * True when both Supabase environment variables are present.
+ *
+ * Reach for this BEFORE touching `supabase` anywhere a missing configuration
+ * should degrade gracefully instead of throwing. Sign-in genuinely cannot work
+ * without Supabase, but the landing page, the changelog, and the 404 screen
+ * have no business dying because an auth variable is unset — see the guard in
+ * `routes/__root.tsx` and the `authUnavailable` helpers in `lib/api.ts`.
+ *
+ * Never throws, so it is safe to call during render and during SSR.
+ */
+export function isSupabaseConfigured(): boolean {
+  const { url, key } = readSupabaseEnv();
+  return Boolean(url && key);
+}
+
+/**
+ * The message shown to a user when auth is unconfigured. Exported so the
+ * sign-in form, the OAuth helper, and the API layer all say the same thing.
+ */
+export const SUPABASE_UNCONFIGURED_MESSAGE =
+  "Authentication is not configured for this deployment. Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY, then rebuild.";
+
 function createSupabaseClient() {
-  // Use import.meta.env for client-side (Vite build-time replacement)
-  // Fall back to process.env for SSR (server-side rendering)
-  //
-  // Two different mechanisms because two different runtimes:
-  //
-  // `import.meta.env.VITE_*` is not a runtime lookup at all — Vite performs a
-  // literal text substitution at BUILD time, so the shipped bundle contains the
-  // string value inlined. This is also why the `VITE_` prefix is mandatory:
-  // Vite only inlines variables carrying it, which prevents your entire server
-  // environment (database passwords included) from being baked into a public
-  // JavaScript bundle by accident.
-  //
-  // `process.env` is a genuine runtime lookup, available only in Node during
-  // server-side rendering. The `||` chain tries the build-time value first and
-  // falls back to the runtime one, so a single module works in both places.
-  const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-  const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
+  const { url: SUPABASE_URL, key: SUPABASE_PUBLISHABLE_KEY } = readSupabaseEnv();
 
   if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
     // Build the list of what is actually missing, so the error names the exact

@@ -13,7 +13,7 @@
 // on.
 
 import { createMiddleware } from '@tanstack/react-start'
-import { supabase } from './client'
+import { supabase, isSupabaseConfigured } from './client'
 
 // Must be registered as a global `functionMiddleware` in `src/start.ts`; otherwise
 // the browser never attaches the bearer token to serverFn RPCs.
@@ -24,6 +24,11 @@ import { supabase } from './client'
 // of them repeating this code.
 export const attachSupabaseAuth = createMiddleware({ type: 'function' }).client(
   async ({ next }) => {
+    // Without credentials there is no session to read and `supabase.auth`
+    // throws. Continue unauthenticated — exactly what this middleware already
+    // does for a signed-out user, per the note on the empty headers below.
+    if (!isSupabaseConfigured()) return next({ headers: {} })
+
     // `getSession()` reads the session Supabase persisted in localStorage (see
     // `persistSession: true` in client.ts). It does not hit the network, so
     // this adds no latency to the call it is wrapping.

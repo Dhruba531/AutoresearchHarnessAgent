@@ -26,7 +26,7 @@ import {
 import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
-import { supabase } from "@/integrations/supabase/client";
+import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
 
 // Must match the key written in `components/operator-console.tsx`. The two
 // halves of the OAuth redirect flow are in different files, and this string is
@@ -75,6 +75,14 @@ function PostAuthRedirectConsumer() {
   const router = useRouter();
   useEffect(() => {
     if (typeof window === "undefined") return;
+    // Bail out when Supabase is unconfigured. This guard is what keeps an
+    // auth misconfiguration from taking down the ENTIRE app: `supabase.auth`
+    // throws in that case, and because this component is mounted in
+    // `RootComponent` the throw would propagate to the root error boundary and
+    // replace every page — landing page, changelog, 404 — with "This page
+    // didn't load". Pages that never needed auth stay up instead, and the
+    // sign-in form reports the real problem when the user tries to use it.
+    if (!isSupabaseConfigured()) return;
     // Subscribe to Supabase auth events rather than checking once on mount.
     // The session is restored asynchronously after the page loads, so a
     // one-shot check on mount would usually run too early and see nobody

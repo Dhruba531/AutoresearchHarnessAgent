@@ -17,7 +17,7 @@ the same Worker.
 ```bash
 cp .env.example .env    # then fill in your Supabase values
 bun install             # or: npm install
-bun run dev             # dev server on :3000, proxies /api → :8000
+bun run dev             # dev server on :8080, proxies /api → :8000
 ```
 
 Other commands:
