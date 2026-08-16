@@ -31,8 +31,11 @@
 name: Deploy to Cloudflare Workers
 
 on:
-  # Manual runs, from any branch — this is how to deploy the current feature
-  # branch without merging it first.
+  # NOTE: GitHub only offers workflow_dispatch for workflows that exist on the
+  # DEFAULT branch. Until this file is merged to main it will not appear under
+  # Actions and cannot be dispatched — from this branch or any other. Once it is
+  # on main, the push trigger below already deploys every merge, and this entry
+  # covers re-running a deploy without a new commit.
   workflow_dispatch:
   push:
     branches: [main]

@@ -79,9 +79,14 @@ runtime, so they must be present when you build. Only put publishable keys there
 ### From CI (recommended)
 
 `.github/workflows/deploy.yml` builds and deploys on every push to `main`, and
-on demand from any branch via **Actions → Deploy to Cloudflare Workers → Run
-workflow**. Add these repo secrets once, under **Settings → Secrets and
-variables → Actions**:
+can be re-run on demand via **Actions → Deploy to Cloudflare Workers → Run
+workflow**.
+
+The workflow has to be on `main` before either trigger works — GitHub only
+exposes `workflow_dispatch` for workflows present on the default branch. So the
+order is: add the secrets, then merge, and the merge itself deploys.
+
+Add these repo secrets under **Settings → Secrets and variables → Actions**:
 
 | Secret | Where to find it |
 | --- | --- |
