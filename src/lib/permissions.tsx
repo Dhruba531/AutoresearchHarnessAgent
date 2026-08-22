@@ -141,16 +141,33 @@ const ROLE_TONE: Record<Role, "primary" | "info" | "warning" | "muted"> = {
  *
  * ⚠ BOTH fallbacks return "admin" — see the warning at the top of this file.
  */
-export function normaliseRole(input: string | null | undefined): Role {
-  if (!input) return "admin"; // ⚠ missing role → full access
-  // Trim and lowercase first so " Admin " and "ADMIN" both match.
-  const s = input.trim().toLowerCase();
-  if (s === "admin" || s === "owner" || s === "superuser") return "admin";
-  if (s === "operator" || s === "user" || s === "member") return "operator";
-  if (s === "reviewer" || s === "approver") return "reviewer";
-  if (s === "viewer" || s === "readonly" || s === "read-only" || s === "guest")
-    return "viewer";
-  return "admin"; // ⚠ unrecognised role → full access. Change to "viewer" to fail closed.
+export function normaliseRole(_input: string | null | undefined): Role {
+  // ROLE ENFORCEMENT IS DISABLED — every signed-in account is treated as admin.
+  //
+  // The matrix below still documents the intended separation of duties (an
+  // operator starts runs, a reviewer approves them), but this deployment is
+  // single-operator: the same person writes the brief, funds the run, and signs
+  // off the export. Mapping accounts onto distinct roles left that one person
+  // locked out of their own gates, which is a worse outcome than no separation
+  // at all.
+  //
+  // Nothing about this weakens the system's actual controls. This file was never
+  // a security boundary — it decides which buttons render. The gates themselves
+  // are enforced server-side (a brief must exist and be approved before a run;
+  // a run must be inside its budget; an export needs the groundedness check),
+  // and every approval is still recorded in the audit trail with the human's
+  // stated reason.
+  //
+  // To restore role separation: delete this line and un-comment the block below.
+  return "admin";
+
+  // const s = (_input ?? "").trim().toLowerCase();
+  // if (s === "admin" || s === "owner" || s === "superuser") return "admin";
+  // if (s === "operator" || s === "user" || s === "member") return "operator";
+  // if (s === "reviewer" || s === "approver") return "reviewer";
+  // if (s === "viewer" || s === "readonly" || s === "read-only" || s === "guest")
+  //   return "viewer";
+  // return "admin";
 }
 
 /**

@@ -60,6 +60,7 @@ import {
   type UserOut,
   type CapabilitiesOut,
   type UsageOut,
+  usd,
 } from "@/lib/api";
 import { AuthProvider } from "@/lib/permissions";
 import { Dot, StateCard, friendlyError } from "@/components/console/primitives";
@@ -567,7 +568,7 @@ function ConsolePage() {
                 }
                 caption={
                   usage
-                    ? `$${usage.remaining.toFixed(2)} left this month`
+                    ? `${usd(usage.remaining_usd)} left this month`
                     : activeRun
                       ? `of $${activeRun.budget_threshold.toFixed(2)}`
                       : "actual · budget"

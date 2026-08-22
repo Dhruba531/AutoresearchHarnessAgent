@@ -16,6 +16,7 @@ import {
   type ProviderKeyOut,
   type CapabilitiesOut,
   type UsageOut,
+  usd,
 } from "@/lib/api";
 import { BentoHead, Dot, MetaChip, SectionHeader, StatTile, friendlyError } from "./primitives";
 import { ProviderKeysGate } from "./gating";
@@ -364,8 +365,8 @@ export function UsageBudgetPanel({
   capabilities: CapabilitiesOut | null;
   loading: boolean;
 }) {
-  const spend = usage?.monthly_spend ?? 0;
-  const limit = usage?.monthly_limit ?? 0;
+  const spend = usage?.monthly_spend_usd ?? 0;
+  const limit = usage?.monthly_cap_usd ?? 0;
   const pct = limit > 0 ? Math.min(100, (spend / limit) * 100) : 0;
   const over = Boolean(usage?.over_budget);
   const reasons = capabilities?.reasons ?? {};
@@ -405,7 +406,7 @@ export function UsageBudgetPanel({
           <StatTile label="limit" value={usage ? `$${limit.toFixed(2)}` : "—"} />
           <StatTile
             label="remaining"
-            value={usage ? `$${usage.remaining.toFixed(2)}` : "—"}
+            value={usd(usage?.remaining_usd)}
             hint={over ? "cap reached" : undefined}
           />
         </div>

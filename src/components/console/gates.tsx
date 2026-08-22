@@ -28,6 +28,7 @@ import {
   type RunOut,
   type CapabilitiesOut,
   type UsageOut,
+  usd,
 } from "@/lib/api";
 import { BentoHead, Dot, DotTone, MetaChip, ToggleTile, friendlyError } from "./primitives";
 import { Gated } from "./gating";
@@ -494,7 +495,9 @@ export function RunSetupCard({
   // because BOTH `doEstimate` and `doStart` need it — and they must agree, or
   // the user would be quoted for one configuration and charged for another.
   const buildConfig = (): Record<string, unknown> => ({
-    orchestration: agentic ? "agentic" : "linear",
+    // The backend accepts exactly "pipeline" or "agentic" and 422s on anything
+    // else. Sending "linear" rejected every non-agentic run before it started.
+    orchestration: agentic ? "agentic" : "pipeline",
     execute,
     figures,
   });
@@ -825,12 +828,12 @@ export function RunSetupCard({
           },
           {
             label: "monthly remaining",
-            value: usage ? `$${usage.remaining.toFixed(2)}` : "—",
+            value: usd(usage?.remaining_usd),
             tone: overBudgetCap ? "danger" : undefined,
           },
           {
             label: "orchestration",
-            value: agentic ? "agentic loop" : "linear",
+            value: agentic ? "agentic loop" : "pipeline",
           },
           {
             label: "code execution",
