@@ -149,12 +149,34 @@ export class ApiError extends Error {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const base = getApiBase();
+
+  // Identity travels as a Supabase bearer token, NOT as the backend's own
+  // session cookie. Sign-in happens against Supabase, so no backend cookie is
+  // ever issued — sending only `credentials: "include"` means the request
+  // arrives with no credentials at all and the backend 401s before it even
+  // looks at a token. Read the current session and attach it explicitly.
+  //
+  // `getSession()` reads from localStorage and refreshes an expired token when
+  // needed, so this stays valid across a long-lived console session. It is
+  // browser-only: during SSR there is no session to read, and the guard below
+  // keeps this from throwing on the server.
+  let authHeader: Record<string, string> = {};
+  if (typeof window !== "undefined") {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (token) authHeader = { Authorization: `Bearer ${token}` };
+    } catch {
+      // No session, or storage unavailable. Fall through unauthenticated and
+      // let the backend decide — a 401 here is a real answer, not a crash.
+    }
+  }
+
   const res = await fetch(`${base}${path}`, {
-    // Send cookies even on cross-origin requests. This is what carries the
-    // backend's session cookie, and without it every authenticated call would
-    // 401 — the browser omits cookies cross-origin by default.
+    // Cookies are still sent, so the backend's own local-password login keeps
+    // working for deployments that use it instead of Supabase.
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...(init.headers ?? {}) },
+    headers: { "Content-Type": "application/json", ...authHeader, ...(init.headers ?? {}) },
     // CAREFUL: `...init` spreads LAST, so a caller passing `headers` in `init`
     // replaces the merged headers object above rather than adding to it — the
     // Content-Type default is silently lost. The `...(init.headers ?? {})` on
@@ -340,12 +362,32 @@ export interface CapabilitiesOut {
 }
 export const getCapabilities = () => request<CapabilitiesOut>("/api/capabilities");
 
+/**
+ * Response of `GET /api/me/usage`.
+ *
+ * The field names carry the `_usd` suffix the backend actually sends — see
+ * `my_usage` in backend/app.py. An earlier version of this interface declared
+ * `monthly_spend` / `monthly_limit` / `remaining`, which never matched the
+ * server. Because of the `[k: string]: unknown` index signature below,
+ * TypeScript accepted `usage.remaining` as a legal property read, so the drift
+ * type-checked cleanly and only surfaced at runtime as
+ * `Cannot read properties of undefined (reading 'toFixed')` — and only once
+ * the request started returning 200 rather than 401.
+ *
+ * The optional markers are deliberate: they force call sites to handle a
+ * missing number instead of trusting the shape.
+ */
 export interface UsageOut {
-  monthly_spend: number;
-  monthly_limit: number;
-  remaining: number;
-  over_budget: boolean;
+  monthly_spend_usd?: number;
+  monthly_cap_usd?: number;
+  remaining_usd?: number;
+  over_budget?: boolean;
   [k: string]: unknown;
+}
+
+/** Format a possibly-missing dollar amount; never throws on undefined. */
+export function usd(value: number | undefined | null): string {
+  return typeof value === "number" && Number.isFinite(value) ? `$${value.toFixed(2)}` : "—";
 }
 export const getUsage = () => request<UsageOut>("/api/me/usage");
 
@@ -370,7 +412,10 @@ export interface RunOut {
   budget_threshold: number;
   actual_cost: number;
   draft_markdown: string;
-  session_id?: string | null;
+  // The backend sends this as an INT (schemas.py: `session_id: int`), not a
+  // string. Declaring it as a string let `session_id.slice(...)` compile, and
+  // that threw "slice is not a function" at runtime for every run.
+  session_id?: number | null;
   brief_id?: number | null;
   config_json?: RunConfig | null;
   analysis_json?: RunAnalysis | null;

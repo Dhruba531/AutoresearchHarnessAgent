@@ -175,7 +175,10 @@ export function StatusTimeline({
   const events: TimelineEvent[] = useMemo(() => {
     const list: TimelineEvent[] = [];
     const runArtifacts = activeRun?.artifacts ?? [];
-    const sessionRef = activeRun?.session_id ?? null;
+    // session_id arrives as a NUMBER from the backend. Convert once here so the
+    // rest of this component can treat it as the display string it always was.
+    const sessionRef =
+      activeRun?.session_id != null ? String(activeRun.session_id) : null;
     const runId = activeRun?.id ?? null;
 
     // Project created
@@ -278,8 +281,10 @@ export function StatusTimeline({
         key: "run-start",
         gate: "run",
         label: "Run started",
-        detail: activeRun.session_id
-          ? `session ${activeRun.session_id.slice(0, 8)}`
+        // A numeric id has nothing to truncate; the old `.slice(0, 8)` assumed a
+        // UUID string and threw "slice is not a function", taking down the page.
+        detail: sessionRef
+          ? `session ${sessionRef}`
           : `status ${activeRun.status}`,
         actor: "agent runtime",
         timestamp: activeRun.started_at,
