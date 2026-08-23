@@ -662,6 +662,64 @@ export const saveIdea = (projectId: number, idea_text: string) =>
     body: JSON.stringify({ idea_text }),
   });
 
+
+// ---- Dataset uploads ------------------------------------------------------
+// Files a researcher supplies for a project (a dataset, a notebook, notes the
+// agents should read). Sent as base64 JSON rather than multipart: the backend's
+// requirements are a hashed uv lockfile, and multipart would mean adding
+// python-multipart to it. Base64 costs ~33% in transit, which is fine at these
+// sizes and avoids touching the dependency set.
+
+export interface UploadOut {
+  name: string;
+  size_bytes: number;
+  uploaded_at: string;
+}
+
+/** Read a File into the base64 payload the API expects. */
+export function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    // readAsDataURL yields "data:<mime>;base64,<payload>" — the API wants only
+    // the payload, so drop everything up to and including the comma.
+    reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+export const listUploads = (projectId: number) =>
+  request<UploadOut[]>(`/api/projects/${projectId}/uploads`);
+
+export const uploadDataset = (projectId: number, filename: string, content_base64: string) =>
+  request<UploadOut>(`/api/projects/${projectId}/uploads`, {
+    method: "POST",
+    body: JSON.stringify({ filename, content_base64 }),
+  });
+
+
+export interface ExecutionOut {
+  ok: boolean;
+  status: string;
+  stdout: string;
+  stderr: string;
+  seconds: number;
+  cost_usd: number;
+}
+
+/** Execute one uploaded .py file on the isolated RunPod sandbox. */
+export const runUploadedFile = (
+  projectId: number,
+  filename: string,
+  endpoint_id: string,
+  gpu_type = "rtx 4090",
+  budget_usd = 0.25,
+) =>
+  request<ExecutionOut>(
+    `/api/projects/${projectId}/uploads/${encodeURIComponent(filename)}/run`,
+    { method: "POST", body: JSON.stringify({ endpoint_id, gpu_type, budget_usd }) },
+  );
+
 // ---- Briefs ---------------------------------------------------------------
 // A BRIEF is the AI-generated research plan for a project. Note the workflow
 // encoded in these three endpoints: generate → update → approve. The approval

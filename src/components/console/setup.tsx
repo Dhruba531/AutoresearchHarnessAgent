@@ -1,7 +1,7 @@
 // Pre-run setup — pointing the app at a backend, and capturing the research
 // question that seeds everything downstream.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   clearApiBase,
@@ -10,7 +10,14 @@ import {
   health,
   saveIdea,
   setApiBase,
+  listUploads,
+  uploadDataset,
+  fileToBase64,
+  runUploadedFile,
   type ProjectOut,
+  type UploadOut,
+  type CapabilitiesOut,
+  type ExecutionOut,
 } from "@/lib/api";
 import { Dot, SectionHeader, friendlyError } from "./primitives";
 
@@ -199,6 +206,216 @@ export function IdeaCard({
       </div>
     </div>
   );
+}
+
+// ─── Dataset uploads ──────────────────────────────────────────────────────
+//
+// Files the researcher supplies for a project: a dataset, a notebook, notes the
+// agents should read. Stored on the same durable volume as run artifacts and
+// scoped to the project, so they survive redeploys and outlive any single run.
+//
+// This STORES files. It does not execute them — running generated or uploaded
+// code is a separate, operator-gated path through an isolated RunPod sandbox
+// that never executes on the API host.
+
+/** Files the sandbox can execute: plain scripts, and notebooks whose code
+ *  cells the backend concatenates into one script. */
+const RUNNABLE = /\.(py|ipynb)$/i;
+
+export function DatasetCard({
+  project,
+  capabilities,
+}: {
+  project: ProjectOut;
+  capabilities: CapabilitiesOut | null;
+}) {
+  const [files, setFiles] = useState<UploadOut[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [endpointId, setEndpointId] = useState("");
+  const [running, setRunning] = useState("");
+  const [result, setResult] = useState<ExecutionOut | null>(null);
+
+  // The sandbox needs an operator flag AND an enabled RunPod key. Rather than
+  // let the button fail, it states the precondition — the same shape the rest of
+  // the console uses for gated actions.
+  const canExecute = Boolean(capabilities?.execute_ready);
+  // With the private sandbox there is no third-party endpoint to name, so the
+  // RunPod field is disabled rather than demanded.
+  const usesSandbox =
+    (capabilities as (typeof capabilities & { execution_backend?: string }) | null)
+      ?.execution_backend === "sandbox";
+
+  const execute = async (name: string) => {
+    if (!usesSandbox && !endpointId.trim()) {
+      toast.error("Enter your RunPod endpoint id first");
+      return;
+    }
+    setRunning(name);
+    setResult(null);
+    try {
+      const res = await runUploadedFile(project.id, name, endpointId.trim());
+      setResult(res);
+      if (res.ok) toast.success(`Finished in ${res.seconds.toFixed(1)}s`);
+      else toast.warning(`Job ${res.status}`);
+    } catch (e) {
+      toast.error(friendlyError(e, "Could not run the file"));
+    } finally {
+      setRunning("");
+    }
+  };
+
+  const refresh = async () => {
+    try {
+      setFiles((await listUploads(project.id)) ?? []);
+    } catch {
+      // A project with no uploads directory yet is not an error worth a toast.
+      setFiles([]);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, [project.id]);
+
+  const send = async (list: FileList | null) => {
+    const file = list?.[0];
+    if (!file) return;
+    setBusy(true);
+    try {
+      const b64 = await fileToBase64(file);
+      const saved = await uploadDataset(project.id, file.name, b64);
+      toast.success(`Uploaded ${saved.name}`, { description: humanSize(saved.size_bytes) });
+      await refresh();
+    } catch (e) {
+      toast.error(friendlyError(e, "Could not upload file"));
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  return (
+    <div className="panel overflow-hidden">
+      <SectionHeader icon="⬓">DATASET UPLOAD</SectionHeader>
+      <div className="p-5">
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            void send(e.dataTransfer.files);
+          }}
+          onClick={() => inputRef.current?.click()}
+          className={`cursor-pointer rounded-md border border-dashed p-6 text-center transition-colors ${
+            dragging
+              ? "border-primary bg-primary/5"
+              : "border-panel-border bg-background/40 hover:border-foreground/40"
+          }`}
+        >
+          <div className="font-mono text-xs text-foreground/80">
+            {busy ? "Uploading…" : "Drop a file here, or click to choose"}
+          </div>
+          <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+            csv · json · txt · py · ipynb — up to 10 MB · .py/.ipynb are runnable
+          </div>
+          <input
+            ref={inputRef}
+            type="file"
+            className="hidden"
+            onChange={(e) => void send(e.target.files)}
+          />
+        </div>
+
+        {files.some((f) => RUNNABLE.test(f.name)) && (
+          <div className="mt-4">
+            <label className="mono-label">runpod endpoint id</label>
+            <input
+              value={endpointId}
+              onChange={(e) => setEndpointId(e.target.value)}
+              placeholder={
+                usesSandbox ? "not needed — running on the private sandbox" : "e.g. 5x9k2ab7cdef"
+              }
+              disabled={!canExecute || usesSandbox}
+              className="mt-1 w-full rounded-md border border-panel-border bg-background/50 px-3 py-2 font-mono text-[12px] text-foreground focus:border-primary focus:outline-none disabled:opacity-50"
+            />
+            <p className="mt-1.5 font-mono text-[11px] text-muted-foreground">
+              {usesSandbox
+                ? "Running on the private sandbox: a separate container with no database, no keys, capped memory and wall-clock. Code never runs on the API host."
+                : canExecute
+                  ? "Runs on RunPod Serverless, isolated from the API host."
+                  : "Requires the sandbox, or AGENTLAB_ALLOW_EXECUTION with a RunPod key."}
+            </p>
+          </div>
+        )}
+
+        {result && (
+          <div className="mt-4 rounded-md border border-panel-border bg-background/40 p-3">
+            <div className="flex items-center justify-between">
+              <span className="mono-label">{result.ok ? "run complete" : `run ${result.status}`}</span>
+              <span className="font-mono text-[11px] text-muted-foreground">
+                {result.seconds.toFixed(1)}s · ${result.cost_usd.toFixed(4)}
+              </span>
+            </div>
+            {result.stdout && (
+              <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-foreground/80">
+                {result.stdout}
+              </pre>
+            )}
+            {result.stderr && (
+              <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-destructive/80">
+                {result.stderr}
+              </pre>
+            )}
+          </div>
+        )}
+
+        {files.length > 0 && (
+          <ul className="mt-4 space-y-1.5">
+            {files.map((f) => (
+              <li
+                key={f.name}
+                className="flex items-center justify-between gap-3 rounded-md border border-panel-border bg-background/40 px-3 py-2"
+              >
+                <span className="truncate font-mono text-[12px] text-foreground/85">{f.name}</span>
+                <span className="flex shrink-0 items-center gap-2">
+                  <span className="font-mono text-[11px] text-muted-foreground">
+                    {humanSize(f.size_bytes)}
+                  </span>
+                  {RUNNABLE.test(f.name) && (
+                    <button
+                      onClick={() => void execute(f.name)}
+                      disabled={!canExecute || running !== ""}
+                      title={
+                        canExecute
+                          ? "Run this file on the RunPod GPU sandbox"
+                          : "Needs the operator execution flag and an enabled RunPod key"
+                      }
+                      className="rounded-sm border border-primary/40 px-2 py-0.5 font-mono text-[10px] text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:border-panel-border disabled:text-muted-foreground"
+                    >
+                      {running === f.name ? "running…" : "▶ train on runpod"}
+                    </button>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Bytes as a short human string; avoids "20 bytes" reading as a bug. */
+function humanSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // ─── Brief ────────────────────────────────────────────────────────────────

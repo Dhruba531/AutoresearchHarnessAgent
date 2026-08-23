@@ -71,7 +71,7 @@ import {
   NewProjectSheet,
   ProjectRail,
 } from "@/components/console/navigation";
-import { AgentConnectionPanel, IdeaCard } from "@/components/console/setup";
+import { AgentConnectionPanel, DatasetCard, IdeaCard } from "@/components/console/setup";
 import { BriefCard, RunSetupCard } from "@/components/console/gates";
 import {
   AgenticActionsCard,
@@ -605,6 +605,7 @@ function ConsolePage() {
               <>
                 <section className="mt-8 grid gap-6 xl:grid-cols-2">
                   <IdeaCard project={activeProject} onIdeaSaved={setActiveProject} />
+                  <DatasetCard project={activeProject} capabilities={capabilities} />
                   <BriefCard project={activeProject} brief={brief} setBrief={setBrief} />
                 </section>
 
