@@ -176,7 +176,20 @@ export function ReviewerPanel({ findings }: { findings: ReviewFindingOut[] }) {
           </div>
         </div>
       ) : (
-        <div className="grid gap-px bg-panel-border md:grid-cols-2 xl:grid-cols-3">
+        // Two columns, not three. There are four reviewer categories, so a
+        // three-wide grid leaves the fourth card alone on its own row with two
+        // empty cells beside it — and because the seams are drawn with
+        // `gap-px` over a panel-coloured background, those empty cells render as
+        // a large blank slab. Two columns divide four cards evenly and give the
+        // prose a wider measure to sit in. The last-child rule keeps it tidy for
+        // an odd number of categories by letting the final card span the row.
+        // Real gaps and per-card borders, not the `gap-px` over a panel-coloured
+        // background used elsewhere in the app. That technique draws hairline
+        // seams by letting the container colour show through — which also paints
+        // any EMPTY grid cell as a large filled slab whenever the category count
+        // does not divide evenly into the columns. With borders, leftover space is
+        // just background, so the layout holds for any number of reviewers.
+        <div className="grid items-start gap-4 p-4 md:grid-cols-2">
           {grouped.map(([category, items]) => {
             const worst = items.reduce<string>(
               (acc, f) =>
@@ -192,7 +205,7 @@ export function ReviewerPanel({ findings }: { findings: ReviewFindingOut[] }) {
             const tone: DotTone =
               worst === "high" ? "error" : worst === "medium" ? "warning" : "success";
             return (
-              <div key={category} className="bg-panel p-6">
+              <div key={category} className="rounded-lg border border-panel-border bg-panel p-6">
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="mono-label">category</div>
