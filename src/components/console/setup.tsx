@@ -243,9 +243,9 @@ export function DatasetCard({
   const canExecute = Boolean(capabilities?.execute_ready);
   // With the private sandbox there is no third-party endpoint to name, so the
   // RunPod field is disabled rather than demanded.
-  const usesSandbox =
-    (capabilities as (typeof capabilities & { execution_backend?: string }) | null)
-      ?.execution_backend === "sandbox";
+  const backend = (capabilities as (typeof capabilities & { execution_backend?: string }) | null)
+    ?.execution_backend;
+  const usesSandbox = backend === "sandbox" || backend === "local";
 
   const execute = async (name: string) => {
     if (!usesSandbox && !endpointId.trim()) {
@@ -339,17 +339,19 @@ export function DatasetCard({
               value={endpointId}
               onChange={(e) => setEndpointId(e.target.value)}
               placeholder={
-                usesSandbox ? "not needed — running on the private sandbox" : "e.g. 5x9k2ab7cdef"
+                usesSandbox ? "not needed — running on the server sandbox" : "e.g. 5x9k2ab7cdef"
               }
               disabled={!canExecute || usesSandbox}
               className="mt-1 w-full rounded-md border border-panel-border bg-background/50 px-3 py-2 font-mono text-[12px] text-foreground focus:border-primary focus:outline-none disabled:opacity-50"
             />
             <p className="mt-1.5 font-mono text-[11px] text-muted-foreground">
-              {usesSandbox
-                ? "Running on the private sandbox: a separate container with no database, no keys, capped memory and wall-clock. Code never runs on the API host."
-                : canExecute
-                  ? "Runs on RunPod Serverless, isolated from the API host."
-                  : "Requires the sandbox, or AGENTLAB_ALLOW_EXECUTION with a RunPod key."}
+              {backend === "local"
+                ? "Runs on the API host in a resource-limited subprocess: own working directory, no API keys in its environment, capped memory, CPU and wall-clock. Not a security boundary — use RunPod or a container for untrusted code."
+                : usesSandbox
+                  ? "Running on the private sandbox: a separate container with no database, no keys, capped memory and wall-clock. Code never runs on the API host."
+                  : canExecute
+                    ? "Runs on RunPod Serverless, isolated from the API host."
+                    : "Requires the sandbox, or AGENTLAB_ALLOW_EXECUTION with a RunPod key."}
             </p>
           </div>
         )}
@@ -357,7 +359,9 @@ export function DatasetCard({
         {result && (
           <div className="mt-4 rounded-md border border-panel-border bg-background/40 p-3">
             <div className="flex items-center justify-between">
-              <span className="mono-label">{result.ok ? "run complete" : `run ${result.status}`}</span>
+              <span className="mono-label">
+                {result.ok ? "run complete" : `run ${result.status}`}
+              </span>
               <span className="font-mono text-[11px] text-muted-foreground">
                 {result.seconds.toFixed(1)}s · ${result.cost_usd.toFixed(4)}
               </span>
@@ -398,7 +402,11 @@ export function DatasetCard({
                       }
                       className="rounded-sm border border-primary/40 px-2 py-0.5 font-mono text-[10px] text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:border-panel-border disabled:text-muted-foreground"
                     >
-                      {running === f.name ? "running…" : "▶ train on runpod"}
+                      {running === f.name
+                        ? "running…"
+                        : usesSandbox
+                          ? "▶ run"
+                          : "▶ train on runpod"}
                     </button>
                   )}
                 </span>

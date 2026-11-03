@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "deploy": "vite build && npx --yes wrangler deploy",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "backend": "python3 -m uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload --reload-dir backend",
+    "test:backend": "python3 -m pytest backend/tests -q"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

@@ -38,12 +38,13 @@
 import { createFileRoute, isRedirect, redirect, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { toast, Toaster } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
+import { isSupabaseConfigured, supabase } from "@/integrations/supabase/client";
 import { WorkspaceTheme } from "@/components/workspace-theme";
 import {
   getCapabilities,
   getUsage,
   getProject,
+  PROVIDER_KEYS_CHANGED,
   getRun,
   hasRealBackend,
   health,
@@ -258,7 +259,13 @@ function ConsolePage() {
     if (!authChecked) return;
     void refreshMeta();
     const id = setInterval(() => void refreshMeta(), 60_000);
-    return () => clearInterval(id);
+    // A newly saved key changes what the gates allow; do not wait for the poll.
+    const onKeys = () => void refreshMeta();
+    window.addEventListener(PROVIDER_KEYS_CHANGED, onKeys);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener(PROVIDER_KEYS_CHANGED, onKeys);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authChecked]);
 
@@ -423,7 +430,11 @@ function ConsolePage() {
         pollRef.current = null;
       }
     };
-  }, [activeRun?.id, activeRun?.status]);
+    // `logs.length` matters too: on completion the status flips first (from the
+    // socket) and the full record with its logs arrives a moment later with the
+    // same status. Without it the panel would stay blank after a run finished.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRun?.id, activeRun?.status, activeRun?.logs?.length]);
   // ^ Depends on the id AND the status — using `activeRun` itself would re-run
   //   this whole teardown/setup cycle on every unrelated field change.
 
@@ -439,7 +450,7 @@ function ConsolePage() {
       await apiLogout().catch(() => {
         /* backend may be unavailable; still clear local session */
       });
-      await supabase.auth.signOut();
+      if (isSupabaseConfigured()) await supabase.auth.signOut();
       toast.success("Signed out");
       navigate({ to: "/auth", replace: true });
     } catch {

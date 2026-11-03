@@ -692,10 +692,10 @@ export function RunSetupCard({
               on={agentic}
               onChange={agenticReady ? setAgentic : () => {}}
               icon="✦"
-              label="Agentic"
+              label="Super agent"
               caption={
                 agenticReady
-                  ? "planner + tool loop"
+                  ? "lead + parallel sub-agents · skills · memory"
                   : reasons.orchestration || "agentic loop unavailable"
               }
             />
@@ -703,7 +703,7 @@ export function RunSetupCard({
               on={execute}
               onChange={executeReady ? setExecute : () => {}}
               icon="⚙"
-              label="Execute on RunPod"
+              label="Execute code"
               caption={
                 executeReady
                   ? "run generated code"
@@ -833,11 +833,11 @@ export function RunSetupCard({
           },
           {
             label: "orchestration",
-            value: agentic ? "agentic loop" : "pipeline",
+            value: agentic ? "super agent" : "pipeline",
           },
           {
             label: "code execution",
-            value: execute ? "RunPod enabled" : "disabled",
+            value: execute ? "enabled" : "disabled",
             tone: execute ? "danger" : undefined,
           },
         ]}

@@ -39,3 +39,8 @@ dist-ssr
 
 # Lockfile: this repo uses bun.lock
 package-lock.json
+
+# Backend runtime data (database, uploads, artifacts, secret key)
+data/
+__pycache__/
+.pytest_cache/

@@ -71,6 +71,17 @@ function createSupabaseClient() {
 
 // Holds the single client instance once created. The leading underscore is a
 // convention meaning "private to this module" — it is not exported.
+/**
+ * True when the build has Supabase credentials. Without them the console signs
+ * in against the backend's own email/password accounts instead (see lib/api.ts).
+ */
+export function isSupabaseConfigured(): boolean {
+  const env = typeof process !== 'undefined' ? process.env : undefined;
+  const url = import.meta.env.VITE_SUPABASE_URL || env?.SUPABASE_URL;
+  const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || env?.SUPABASE_PUBLISHABLE_KEY;
+  return Boolean(url && key);
+}
+
 let _supabase: ReturnType<typeof createSupabaseClient> | undefined;
 
 // Import the supabase client like this:
