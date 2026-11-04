@@ -22,11 +22,12 @@ import {
   useRouter,
   HeadContent,
   Scripts,
+  type ErrorComponentProps,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
-import { supabase } from "@/integrations/supabase/client";
+import { isSupabaseConfigured, supabase } from "@/integrations/supabase/client";
 
 // Must match the key written in `components/operator-console.tsx`. The two
 // halves of the OAuth redirect flow are in different files, and this string is
@@ -75,6 +76,8 @@ function PostAuthRedirectConsumer() {
   const router = useRouter();
   useEffect(() => {
     if (typeof window === "undefined") return;
+    // Local-account mode has no OAuth round trip to come back from.
+    if (!isSupabaseConfigured()) return;
     // Subscribe to Supabase auth events rather than checking once on mount.
     // The session is restored asynchronously after the page loads, so a
     // one-shot check on mount would usually run too early and see nobody
@@ -142,7 +145,7 @@ function NotFoundComponent() {
  * the app cannot boot at all, whereas this runs inside a working React app that
  * hit a problem on one route.
  */
-function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
+function ErrorComponent({ error, reset }: ErrorComponentProps) {
   console.error(error);
   const router = useRouter();
   return (
@@ -234,10 +237,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     ],
   }),
   // The four component slots this route fills:
-  shellComponent: RootShell,          // the <html> document itself
-  component: RootComponent,           // wraps every page's content
+  shellComponent: RootShell, // the <html> document itself
+  component: RootComponent, // wraps every page's content
   notFoundComponent: NotFoundComponent, // no route matched
-  errorComponent: ErrorComponent,       // a route threw
+  errorComponent: ErrorComponent, // a route threw
 });
 
 /**

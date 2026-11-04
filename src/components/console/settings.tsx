@@ -39,14 +39,8 @@ export const PROVIDERS: ProviderDef[] = [
     label: "Paste Claude API key",
     placeholder: "sk-ant-...",
     modelLabel: "model",
-    models: [
-      "claude-opus-4-8",
-      "claude-fable-5",
-      "claude-3-5-sonnet-latest",
-      "claude-3-5-haiku-latest",
-      "claude-3-opus-latest",
-    ],
-    helper: "Drives brief + draft generation on real runs.",
+    models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"],
+    helper: "Drives the brief, super agent, paper and reviewers on real runs.",
   },
   {
     id: "openai",
@@ -56,6 +50,16 @@ export const PROVIDERS: ProviderDef[] = [
     modelLabel: "model",
     models: ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "o4-mini"],
     helper: "Alternate LLM for real runs.",
+  },
+  {
+    id: "deepseek",
+    title: "DeepSeek",
+    label: "Paste DeepSeek API key",
+    placeholder: "sk-...",
+    modelLabel: "model",
+    models: ["deepseek-reasoner", "deepseek-chat"],
+    helper:
+      "Runs the whole agent on DeepSeek: brief, super agent (lead + sub-agents), paper, reviewers and search proposals. When several LLM keys are enabled, the most recently saved one drives runs.",
   },
   {
     id: "runpod",
@@ -98,13 +102,15 @@ export function ProviderKeysPanel() {
   const [keys, setKeys] = useState<ProviderKeyOut[]>([]);
   const [drafts, setDrafts] = useState<Record<ProviderId, ProviderDraft>>({
     openai: { apiKey: "", modelName: "gpt-4.1-mini", enabled: false },
-    anthropic: { apiKey: "", modelName: "claude-3-5-sonnet-latest", enabled: false },
+    anthropic: { apiKey: "", modelName: "claude-opus-5-5", enabled: false },
+    deepseek: { apiKey: "", modelName: "deepseek-reasoner", enabled: false },
     runpod: { apiKey: "", modelName: "", enabled: false },
     gemini: { apiKey: "", modelName: "gemini-2.5-flash-image", enabled: false },
   });
   const [visible, setVisible] = useState<Record<ProviderId, boolean>>({
     openai: false,
     anthropic: false,
+    deepseek: false,
     runpod: false,
     gemini: false,
   });
@@ -334,7 +340,9 @@ export function ProviderKeysPanel() {
                 <p className="font-mono text-[11px] text-muted-foreground">
                   {saved
                     ? `Configured · last test: ${saved.test_status.replace("_", " ")}`
-                    : "Mock runs work without an API key."}
+                    : provider.id === "runpod" || provider.id === "gemini"
+                      ? "Not configured · optional."
+                      : "Not configured — runs need at least one enabled LLM key."}
                 </p>
               </div>
             </div>

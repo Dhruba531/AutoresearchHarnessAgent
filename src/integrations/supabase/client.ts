@@ -6,8 +6,8 @@
 //
 // The interesting part of this file is the Proxy at the bottom.
 
-import { createClient } from '@supabase/supabase-js';
-import type { Database } from './types';
+import { createClient } from "@supabase/supabase-js";
+import type { Database } from "./types";
 
 function createSupabaseClient() {
   // Use import.meta.env for client-side (Vite build-time replacement)
@@ -26,7 +26,8 @@ function createSupabaseClient() {
   // server-side rendering. The `||` chain tries the build-time value first and
   // falls back to the runtime one, so a single module works in both places.
   const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-  const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
+  const SUPABASE_PUBLISHABLE_KEY =
+    import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
 
   if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
     // Build the list of what is actually missing, so the error names the exact
@@ -38,10 +39,10 @@ function createSupabaseClient() {
     // only when that variable is absent. It is a common way to build an array
     // conditionally without `if` statements or `.filter(Boolean)`.
     const missing = [
-      ...(!SUPABASE_URL ? ['SUPABASE_URL'] : []),
-      ...(!SUPABASE_PUBLISHABLE_KEY ? ['SUPABASE_PUBLISHABLE_KEY'] : []),
+      ...(!SUPABASE_URL ? ["SUPABASE_URL"] : []),
+      ...(!SUPABASE_PUBLISHABLE_KEY ? ["SUPABASE_PUBLISHABLE_KEY"] : []),
     ];
-    const message = `Missing Supabase environment variable(s): ${missing.join(', ')}. Set them in your .env.`;
+    const message = `Missing Supabase environment variable(s): ${missing.join(", ")}. Set them in your .env.`;
     // Logged AND thrown deliberately: the log guarantees it reaches the console
     // even if some caller swallows the exception.
     console.error(`[Supabase] ${message}`);
@@ -58,19 +59,30 @@ function createSupabaseClient() {
       // `localStorage` only exists in a browser. During SSR we pass `undefined`,
       // which tells Supabase not to persist anything — correct, since the server
       // has no single user to store a session for.
-      storage: typeof window !== 'undefined' ? localStorage : undefined,
+      storage: typeof window !== "undefined" ? localStorage : undefined,
       // Keeps the session in storage across page reloads, so users are not
       // signed out every time they refresh.
       persistSession: true,
       // Refreshes the access token in the background before it expires, so long
       // sessions do not suddenly start failing with 401s.
       autoRefreshToken: true,
-    }
+    },
   });
 }
 
 // Holds the single client instance once created. The leading underscore is a
 // convention meaning "private to this module" — it is not exported.
+/**
+ * True when the build has Supabase credentials. Without them the console signs
+ * in against the backend's own email/password accounts instead (see lib/api.ts).
+ */
+export function isSupabaseConfigured(): boolean {
+  const env = typeof process !== "undefined" ? process.env : undefined;
+  const url = import.meta.env.VITE_SUPABASE_URL || env?.SUPABASE_URL;
+  const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || env?.SUPABASE_PUBLISHABLE_KEY;
+  return Boolean(url && key);
+}
+
 let _supabase: ReturnType<typeof createSupabaseClient> | undefined;
 
 // Import the supabase client like this:
@@ -107,4 +119,3 @@ export const supabase = new Proxy({} as ReturnType<typeof createSupabaseClient>,
     return Reflect.get(_supabase, prop, receiver);
   },
 });
-

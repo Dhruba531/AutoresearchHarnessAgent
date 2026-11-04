@@ -40,7 +40,7 @@
 // `openSearchTrace` near the bottom use WebSockets rather than fetch, and the
 // Auth section routes through Supabase instead of the FastAPI backend.
 
-import { supabase } from "@/integrations/supabase/client";
+import { isSupabaseConfigured, supabase } from "@/integrations/supabase/client";
 import type { User } from "@supabase/supabase-js";
 
 // The localStorage key holding a user-configured backend URL. Named as a
@@ -146,8 +146,48 @@ export class ApiError extends Error {
  *
  * Not exported: it is internal plumbing, and every endpoint below wraps it.
  */
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+// ---- Session token ----------------------------------------------------------
+// Two identity sources. With Supabase configured, the token is the Supabase
+// access token. Without it, the backend issues its own (local accounts), kept
+// in localStorage. Either way the latest value is cached here so WebSocket
+// URLs, which cannot carry headers, can include it synchronously.
+const LOCAL_TOKEN_KEY = "agentlab_token";
+let cachedToken: string | null = null;
 
+function readLocalToken(): string | null {
+  try {
+    return window.localStorage.getItem(LOCAL_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalToken(token: string | null): void {
+  cachedToken = token;
+  try {
+    if (token) window.localStorage.setItem(LOCAL_TOKEN_KEY, token);
+    else window.localStorage.removeItem(LOCAL_TOKEN_KEY);
+  } catch {
+    /* storage disabled: the session lasts for this page only */
+  }
+}
+
+async function currentToken(): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  if (!isSupabaseConfigured()) {
+    cachedToken = readLocalToken();
+    return cachedToken;
+  }
+  try {
+    const { data } = await supabase.auth.getSession();
+    cachedToken = data.session?.access_token ?? null;
+  } catch {
+    cachedToken = null;
+  }
+  return cachedToken;
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const base = getApiBase();
 
   // Identity travels as a Supabase bearer token, NOT as the backend's own
@@ -160,17 +200,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   // needed, so this stays valid across a long-lived console session. It is
   // browser-only: during SSR there is no session to read, and the guard below
   // keeps this from throwing on the server.
-  let authHeader: Record<string, string> = {};
-  if (typeof window !== "undefined") {
-    try {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-      if (token) authHeader = { Authorization: `Bearer ${token}` };
-    } catch {
-      // No session, or storage unavailable. Fall through unauthenticated and
-      // let the backend decide — a 401 here is a real answer, not a crash.
-    }
-  }
+  // No session, or storage unavailable: fall through unauthenticated and let
+  // the backend decide — a 401 here is a real answer, not a crash.
+  const token = await currentToken();
+  const authHeader: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
   const res = await fetch(`${base}${path}`, {
     // Cookies are still sent, so the backend's own local-password login keeps
@@ -426,7 +459,6 @@ export interface RunOut {
   ended_at: string | null;
 }
 
-
 export interface ReviewFindingOut {
   id?: number;
   run_id?: number;
@@ -460,7 +492,7 @@ export interface LogEvent {
   created_at?: string;
 }
 
-export type ProviderId = "openai" | "anthropic" | "runpod" | "gemini";
+export type ProviderId = "openai" | "anthropic" | "deepseek" | "runpod" | "gemini";
 
 export interface ProviderKeyOut {
   id: number;
@@ -483,7 +515,6 @@ export interface ProviderKeyTestOut {
   detail: string;
   tested_at: string;
 }
-
 
 export interface HealthOut {
   ok: boolean;
@@ -539,7 +570,20 @@ function toUserOut(u: User): UserOut {
 }
 
 /** Sign in with email and password. Throws `ApiError(401)` on bad credentials. */
+interface LocalAuthOut {
+  token: string;
+  user: UserOut;
+}
+
 export async function login(email: string, password: string): Promise<UserOut> {
+  if (!isSupabaseConfigured()) {
+    const out = await request<LocalAuthOut>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+    writeLocalToken(out.token);
+    return out.user;
+  }
   // Supabase returns errors in the result object rather than throwing, so this
   // converts to the throwing convention every other function here follows —
   // otherwise callers would need two different error-handling styles.
@@ -550,6 +594,14 @@ export async function login(email: string, password: string): Promise<UserOut> {
 
 /** Create an account. Throws `ApiError(400)` if the sign-up is rejected. */
 export async function register(name: string, email: string, password: string): Promise<UserOut> {
+  if (!isSupabaseConfigured()) {
+    const out = await request<LocalAuthOut>("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ name, email, password }),
+    });
+    writeLocalToken(out.token);
+    return out.user;
+  }
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
@@ -572,6 +624,10 @@ export async function register(name: string, email: string, password: string): P
 
 /** Sign out. Always reports success. */
 export async function logout(): Promise<{ ok: boolean }> {
+  if (!isSupabaseConfigured()) {
+    writeLocalToken(null);
+    return { ok: true };
+  }
   // Deliberately does not check for an error. If sign-out fails server-side the
   // local session is cleared regardless, and there is nothing useful for a user
   // to do about it — reporting failure here would only trap them in the UI.
@@ -587,11 +643,19 @@ export async function logout(): Promise<{ ok: boolean }> {
  * write `const user = await me(); if (!user) redirect("/auth")`.
  */
 export async function me(): Promise<UserOut | null> {
+  if (!isSupabaseConfigured()) {
+    if (typeof window === "undefined" || !readLocalToken()) return null;
+    try {
+      return await request<UserOut>("/api/me");
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) writeLocalToken(null);
+      return null;
+    }
+  }
   const { data, error } = await supabase.auth.getUser();
   if (error || !data.user) return null;
   return toUserOut(data.user);
 }
-
 
 // ---- Provider keys --------------------------------------------------------
 // CRUD for the user's LLM provider API keys (OpenAI, Anthropic, …).
@@ -601,6 +665,12 @@ export async function me(): Promise<UserOut | null> {
 // only ever show you the last four characters, so a leaked API response cannot
 // leak the credential. `testProviderKey` exists because a saved key may still
 // be invalid — it makes a live call to the provider to confirm.
+/** Fired after a key is saved or removed, so capability-gated UI refreshes now. */
+export const PROVIDER_KEYS_CHANGED = "agentlab:provider-keys-changed";
+const announceKeysChanged = () => {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(PROVIDER_KEYS_CHANGED));
+};
+
 export const listProviderKeys = () => request<ProviderKeyOut[]>("/api/provider-keys");
 
 export const saveProviderKey = (payload: {
@@ -612,14 +682,19 @@ export const saveProviderKey = (payload: {
   request<ProviderKeyOut>("/api/provider-keys", {
     method: "POST",
     body: JSON.stringify(payload),
+  }).then((row) => {
+    announceKeysChanged();
+    return row;
   });
 
 export const deleteProviderKey = (provider: ProviderId) =>
-  request<{ ok: boolean }>(`/api/provider-keys/${provider}`, { method: "DELETE" });
+  request<{ ok: boolean }>(`/api/provider-keys/${provider}`, { method: "DELETE" }).then((r) => {
+    announceKeysChanged();
+    return r;
+  });
 
 export const testProviderKey = (provider: ProviderId) =>
   request<ProviderKeyTestOut>(`/api/provider-keys/${provider}/test`, { method: "POST" });
-
 
 // ---- System status --------------------------------------------------------
 // Live operator metrics: queue depth, throughput, spend. This is the same data
@@ -662,7 +737,6 @@ export const saveIdea = (projectId: number, idea_text: string) =>
     body: JSON.stringify({ idea_text }),
   });
 
-
 // ---- Dataset uploads ------------------------------------------------------
 // Files a researcher supplies for a project (a dataset, a notebook, notes the
 // agents should read). Sent as base64 JSON rather than multipart: the backend's
@@ -697,7 +771,6 @@ export const uploadDataset = (projectId: number, filename: string, content_base6
     body: JSON.stringify({ filename, content_base64 }),
   });
 
-
 export interface ExecutionOut {
   ok: boolean;
   status: string;
@@ -715,10 +788,10 @@ export const runUploadedFile = (
   gpu_type = "rtx 4090",
   budget_usd = 0.25,
 ) =>
-  request<ExecutionOut>(
-    `/api/projects/${projectId}/uploads/${encodeURIComponent(filename)}/run`,
-    { method: "POST", body: JSON.stringify({ endpoint_id, gpu_type, budget_usd }) },
-  );
+  request<ExecutionOut>(`/api/projects/${projectId}/uploads/${encodeURIComponent(filename)}/run`, {
+    method: "POST",
+    body: JSON.stringify({ endpoint_id, gpu_type, budget_usd }),
+  });
 
 // ---- Briefs ---------------------------------------------------------------
 // A BRIEF is the AI-generated research plan for a project. Note the workflow
@@ -798,10 +871,7 @@ export interface GroundednessReport {
   [k: string]: unknown;
 }
 
-export const approveFinal = (
-  projectId: number,
-  opts: { notes?: string; force?: boolean } = {},
-) =>
+export const approveFinal = (projectId: number, opts: { notes?: string; force?: boolean } = {}) =>
   request<{ artifact_id?: number; markdown?: string; [k: string]: unknown }>(
     `/api/projects/${projectId}/final/approve`,
     {
@@ -812,7 +882,6 @@ export const approveFinal = (
       }),
     },
   );
-
 
 // ---- Targeted paper revisions (gate G3) -----------------------------------
 // Request a specific edit to the generated paper instead of regenerating it.
@@ -883,6 +952,10 @@ export const applyRevision = (runId: number, revisionId: number, notes = "") =>
  * mixed content.
  */
 function wsUrl(path: string): string {
+  // Browsers cannot set an Authorization header on a WebSocket handshake, so
+  // the session token rides as a query parameter instead.
+  if (cachedToken)
+    path += `${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(cachedToken)}`;
   const base = getApiBase();
   // `replace(/^http/, "ws")` maps http→ws and https→wss in one step, since the
   // anchored `^http` prefix matches both and leaves any trailing "s" in place.
@@ -960,13 +1033,7 @@ export function openRunLogs(runId: number, onEvent: (ev: LogEvent) => void): Web
 // giving up another, such as cost. Those are the only candidates worth
 // choosing between; everything else is beaten outright on both axes.
 
-export type CampaignStatus =
-  | "queued"
-  | "running"
-  | "paused"
-  | "stopped"
-  | "completed"
-  | "failed";
+export type CampaignStatus = "queued" | "running" | "paused" | "stopped" | "completed" | "failed";
 
 export type EditFamily =
   | "architecture"
@@ -1191,9 +1258,7 @@ export const listCandidates = (
   if (opts.sort) q.set("sort", opts.sort);
   if (opts.filter) q.set("filter", opts.filter);
   const qs = q.toString();
-  return request<CandidateOut[]>(
-    `/api/campaigns/${campaignId}/candidates${qs ? `?${qs}` : ""}`,
-  );
+  return request<CandidateOut[]>(`/api/campaigns/${campaignId}/candidates${qs ? `?${qs}` : ""}`);
 };
 
 export const getCandidate = (candidateId: number) =>
