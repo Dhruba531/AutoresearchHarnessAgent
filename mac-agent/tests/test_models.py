@@ -352,3 +352,23 @@ async def test_plain_switch_requests_are_handled_in_code(tmp_path, clean_env):
     await say("use gemini to summarise my last email")  # a task, not a switch: goes to the router
     assert len(light.requests) == 1
     assert router.switch_request("use gemini") and not router.switch_request("I like gemini")
+
+
+@pytest.mark.asyncio
+async def test_relay_says_when_the_mac_restarted(tmp_path, clean_env):
+    import time as _t
+
+    from macagent.__main__ import announce_restart, boot_time
+
+    sent = []
+
+    class R:
+        async def send(self, to, text):
+            sent.append((to, text))
+
+    assert await announce_restart(R(), delay_s=0, boot=lambda: _t.time() - 60)
+    assert sent[0][0] == "all" and "restarted" in sent[0][1]
+    assert not await announce_restart(R(), delay_s=0, boot=lambda: _t.time() - 86400)  # only Relay restarted
+    assert not await announce_restart(R(), delay_s=0, boot=lambda: None)
+    assert len(sent) == 1
+    assert boot_time() is None or boot_time() < _t.time()

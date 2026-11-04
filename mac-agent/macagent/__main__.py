@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 from .config import Settings
@@ -199,6 +200,27 @@ def cmd_install_launchagent(settings: Settings) -> None:
         and keep API keys in {settings.home / 'env'}."""))
 
 
+def boot_time() -> float | None:
+    """When the Mac last started (kern.boottime), or None if unknown."""
+    try:
+        out = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, timeout=5).stdout
+        m = re.search(r"sec\s*=\s*(\d+)", out)
+        return float(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
+async def announce_restart(router, *, within_s: float = 900, delay_s: float = 8, boot=boot_time) -> bool:
+    """After the Mac itself restarted (a power cut, an update), tell the owner Relay is back."""
+    started = boot()
+    if started is None or time.time() - started > within_s:
+        return False  # only Relay restarted (an update): nothing worth a message
+    await asyncio.sleep(delay_s)  # let the network and Telegram come up
+    when = time.strftime("%H:%M", time.localtime(started))
+    await router.send("all", f"Your Mac restarted at {when} (a power cut or an update) and Relay is back online.")
+    return True
+
+
 def cmd_serve(settings: Settings) -> None:
     import uvicorn
 
@@ -255,7 +277,7 @@ def cmd_serve(settings: Settings) -> None:
     from .llm import keep_warm
 
     def background():
-        return ([bot.run()] if bot else []) + [keep_warm(settings)]
+        return ([bot.run()] if bot else []) + [keep_warm(settings), announce_restart(router)]
 
     app = create_app(settings, store, agent, background, router=router, triggers=triggers, watchdog=watchdog,
                      models=models)
