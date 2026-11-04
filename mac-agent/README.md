@@ -84,6 +84,19 @@ reach it and it opens its own.
 Requirements: macOS 13 or later, Python 3.10 or later (`brew install python`),
 and an Anthropic API key.
 
+**One line.** In Terminal on the Mac mini:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dhruba531/AutoresearchHarnessAgent/claude/festive-fermi-gb3xr7/mac-agent/install.sh | bash
+```
+
+It downloads Relay into `~/Relay`, installs it, asks for your API key once
+(hidden as you paste it, saved in `~/.relay/env` with owner-only access),
+checks permissions, starts Relay at login, shares it over Tailscale if you're
+signed in, and prints a pairing code and QR code for your phone. Run the same
+line again to update. To skip the key prompt, put `ANTHROPIC_API_KEY=sk-ant-…`
+before `bash`. The steps below do the same thing by hand.
+
 ```bash
 git clone https://github.com/Dhruba531/AutoresearchHarnessAgent.git
 ```
