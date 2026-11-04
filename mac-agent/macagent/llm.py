@@ -55,6 +55,15 @@ class LLMError(RuntimeError):
     pass
 
 
+def _claude_history(history: list[dict]) -> list[dict]:
+    """Drop fields other providers attach to tool calls (Gemini's thought signatures), which Claude rejects —
+    a task may have started on another provider before failing over."""
+    if not any(isinstance(m.get("content"), list) and any("extra_content" in b for b in m["content"]) for m in history):
+        return history
+    return [{**m, "content": [{k: v for k, v in b.items() if k != "extra_content"} for b in m["content"]]}
+            if isinstance(m.get("content"), list) else m for m in history]
+
+
 @dataclass
 class Turn:
     content: list[dict]
@@ -99,7 +108,7 @@ class ClaudeAdapter:
             "model": self.model,
             "max_tokens": self.max_tokens,
             "system": system,
-            "messages": history,
+            "messages": _claude_history(history),
             "tools": tools + ([COMPUTER_TOOLSET] if self.can_see_screen else []),
             "output_config": {"effort": self.effort},
             "cache_control": {"type": "ephemeral"},

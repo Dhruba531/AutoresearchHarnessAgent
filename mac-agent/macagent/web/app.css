@@ -243,3 +243,23 @@ button.sys-box:hover, .sys-src:hover { border-color: var(--accent); }
   .a-workers { align-self: center; }
   .sys-title.big { font-size: 20px; }
 }
+
+/* -- models and keys ------------------------------------------------------------- */
+.mlist { display: grid; gap: 8px; }
+.mrow { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.mrow.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.mhead { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 10px 12px; text-align: left; }
+.mbody { padding: 0 12px 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.mgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.mgrid label { display: grid; gap: 4px; color: var(--muted); }
+.mgrid select { width: 100%; }
+.mono { font-family: var(--mono); }
+.modelchip { display: inline-flex; align-items: center; gap: 6px; margin: -6px 0 12px; padding: 7px 12px; font-size: 13px;
+             border-radius: 999px; background: var(--panel); border: 1px solid var(--line); color: var(--text); }
+.sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 40; }
+.sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 41; max-width: 680px; margin: 0 auto; background: var(--panel);
+         border-radius: 18px 18px 0 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); box-shadow: var(--shadow); }
+.sheet-row { border-radius: 10px; margin-top: 6px; }
+.sheet-row.on { background: var(--accent-bg); }
+.toggle { width: 22px; height: 22px; flex: 0 0 auto; accent-color: var(--accent); }
+.btn-row .grow { flex: 1; }

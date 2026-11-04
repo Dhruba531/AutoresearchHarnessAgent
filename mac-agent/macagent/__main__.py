@@ -181,8 +181,8 @@ def cmd_serve(settings: Settings) -> None:
     from .agent import Agent
     from .filters import Filter
     from .host import make_host
-    from .llm import make_adapter, make_router_adapter
     from .machines import MachineRegistry
+    from .models import FailoverAdapter, ModelManager
     from .notify import Ntfy
     from .router import Router, WebChannel
     from .server import create_app
@@ -194,9 +194,12 @@ def cmd_serve(settings: Settings) -> None:
     store = Store(str(settings.db_path))
     host = None if settings.local_host == "none" else make_host(settings.fake_host, settings.screen_max_edge)
     machines = MachineRegistry(store, host)  # this Mac (if any) + daemons on other machines
-    light = lambda: make_router_adapter(settings)  # noqa: E731
+    # Which provider and models run is chosen in the app (Settings → Models); on a spent key, fail over.
+    models = ModelManager(settings, store)
+    models.apply_saved()
+    light = lambda: FailoverAdapter(models, "fast")  # noqa: E731
     # Worker layer: strongest model, isolated context per task, parallel, a screen lease per machine.
-    agent = Agent(settings, store, machines, lambda: make_adapter(settings), light_factory=light)
+    agent = Agent(settings, store, machines, lambda: FailoverAdapter(models, "main"), light_factory=light)
     # Event triggers → two-stage filter (code, then policies on a light model) → router.
     triggers = Triggers(store, host, settings) if host else None
     router = Router(settings, store, agent, light, triggers, Filter(store, light))
@@ -213,7 +216,7 @@ def cmd_serve(settings: Settings) -> None:
     if settings.telegram_token:
         from .telegram import TelegramBot
 
-        bot = TelegramBot(settings.telegram_token, agent, store, router=router)
+        bot = TelegramBot(settings.telegram_token, agent, store, router=router, models=models)
         agent.notifiers.append(bot)
         router.add_channel(bot)
 
@@ -227,7 +230,8 @@ def cmd_serve(settings: Settings) -> None:
     def background():
         return ([bot.run()] if bot else []) + [keep_warm(settings)]
 
-    app = create_app(settings, store, agent, background, router=router, triggers=triggers, watchdog=watchdog)
+    app = create_app(settings, store, agent, background, router=router, triggers=triggers, watchdog=watchdog,
+                     models=models)
     from .auth import list_devices
 
     print(f"Relay · machines {', '.join(machines.names()) or 'none yet'} · router {settings.router_model} · "

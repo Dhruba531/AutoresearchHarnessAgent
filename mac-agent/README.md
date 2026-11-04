@@ -217,6 +217,26 @@ internet. Only paired chats are obeyed.
 app. Pick an unguessable topic, because anyone who knows it can read the
 notifications.
 
+## Models and keys (from your phone)
+
+Settings → **Models** keeps a key for each provider you use (Gemini, DeepSeek,
+OpenAI, OpenRouter, Anthropic) or the local model, and lets you pick which one
+runs: a **main** model for tasks and a **fast** model for chat and quick tasks.
+Pick from the list, or choose "Other model id…" to type any id the provider
+offers (e.g. any OpenRouter model). **Test** checks a key without spending
+anything; for OpenRouter it also shows the credit left. The ⚡ chip at the top
+of Chat (or `/model` in Telegram) switches with one tap.
+
+Keys are written to `~/.relay/env` (owner-only) and never shown again: the app
+sees the last four characters. Your choice is saved, so it survives restarts.
+
+**Switch automatically** (on by default): when a call fails because a key ran
+out of credit, was rejected, or hit a rate limit, Relay rests that provider (2
+minutes for a rate limit, an hour otherwise), retries the same step on the next
+provider in your order (↑ ↓) that has a key, and tells you on every channel.
+Ordinary errors (a bad request) don't switch. Each provider shows what it cost
+today and its last error.
+
 ## Configuration (`~/.relay/env` or environment)
 
 | Variable | Default | Meaning |

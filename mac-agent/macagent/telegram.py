@@ -11,6 +11,7 @@ obeyed; everything else is ignored.
   /tasks          → recent tasks
   /screen         → a screenshot of the Mac
   /stop           → cancel the running task
+  /model          → see which model runs, and switch with one tap
   approvals       → Approve / Deny buttons; questions → reply with the answer
 
 In a group (pair it by sending /pair CODE there), Relay behaves like the
@@ -43,7 +44,7 @@ class TelegramBot:
 
     name = "telegram"
 
-    def __init__(self, token: str, agent: Agent, store: Store, transport=None, router=None):
+    def __init__(self, token: str, agent: Agent, store: Store, transport=None, router=None, models=None):
         self.base = f"https://api.telegram.org/bot{token}"
         self.agent, self.store = agent, store
         self.http = httpx.AsyncClient(timeout=60, transport=transport)
@@ -51,6 +52,7 @@ class TelegramBot:
         self.task_messages: dict[tuple[int, int], int] = {}  # (chat, message) → task id
         self.question_messages: dict[tuple[int, int], int] = {}  # (chat, message) → approval id
         self.router = router
+        self.models = models  # ModelManager, for /model
         self.me: dict | None = None
         self.roots: dict[tuple[int, int], int] = {}  # (chat, message) → root message of its reply chain
         self.typing: dict[int, asyncio.Task] = {}  # chat → "typing…" kept alive until Relay answers
@@ -141,6 +143,8 @@ class TelegramBot:
             return await self.say(chat, f"Added to task #{tid}.")
         if text in {"/start", "/help"}:
             return await self.say(chat, __doc__.split("\n\n", 2)[2])
+        if text == "/model" and self.models is not None:
+            return await self.model_menu(chat)
         if text == "/status":
             return await self.say(chat, self.status_text())
         if text == "/tasks":
@@ -194,10 +198,33 @@ class TelegramBot:
         self.store.x("INSERT OR REPLACE INTO telegram_chats(chat_id,name,created_at) VALUES(?,?,?)", (chat, name, time.time()))
         await self.say(chat, "Paired. Send me anything you want your Mac to do.")
 
+    async def model_menu(self, chat: int) -> dict:
+        st = self.models.status()
+        a = st["active"]
+        rows = [[{"text": ("✓ " if p["active"] else "") + f"{p['label']} · {p['model'].split('/')[-1]}"
+                          + (f"  ({'$%.3f' % p['today_usd']} today)" if p["today_calls"] else ""),
+                  "callback_data": f"m:{p['id']}"}] for p in st["providers"] if p["has_key"]]
+        text = (f"Using {a['label']}: tasks on {a['model'].split('/')[-1]}, chat on {a['router_model'].split('/')[-1]}.\n"
+                f"Tap to switch. Add keys and pick models in the app (Settings → Models).")
+        return await self.say(chat, text, reply_markup={"inline_keyboard": rows})
+
     async def on_button(self, q: dict) -> None:
         chat = ((q.get("message") or {}).get("chat") or {}).get("id")
         if not chat or not self.authorized(chat):
             return await self.call("answerCallbackQuery", callback_query_id=q["id"])
+        data = q.get("data", "")
+        if data.startswith("m:") and self.models is not None:
+            try:
+                self.models.use(data[2:])
+                self.agent.bus.publish({"type": "models"})
+                a = self.models.status()["active"]
+                note = f"Now using {a['label']} ({a['model'].split('/')[-1]})."
+            except (ValueError, KeyError) as exc:
+                note = str(exc) or "Unknown provider."
+            await self.call("answerCallbackQuery", callback_query_id=q["id"], text=note[:190])
+            if q.get("message"):
+                await self.call("editMessageText", chat_id=chat, message_id=q["message"]["message_id"], text=note)
+            return
         try:
             kind, aid, verdict = q.get("data", "").split(":")
         except ValueError:
