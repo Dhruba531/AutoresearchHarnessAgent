@@ -240,7 +240,10 @@ def cmd_serve(settings: Settings) -> None:
     if settings.telegram_token:
         from .telegram import TelegramBot
 
-        bot = TelegramBot(settings.telegram_token, agent, store, router=router, models=models)
+        ts = tailscale_name()
+        app_url = os.environ.get("RELAY_PUBLIC_URL") or (f"https://{ts}" if ts else None)
+        bot = TelegramBot(settings.telegram_token, agent, store, router=router, models=models, app_url=app_url,
+                          public=os.environ.get("RELAY_PUBLIC") == "1" or bool(os.environ.get("RELAY_PUBLIC_URL")))
         agent.notifiers.append(bot)
         router.add_channel(bot)
 

@@ -12,6 +12,7 @@ obeyed; everything else is ignored.
   /screen         → a screenshot of the Mac
   /stop           → cancel the running task
   /model          → see which model runs, and switch with one tap
+  /app            → a one-time link that opens the full Relay app (inside Telegram, or any browser)
   approvals       → Approve / Deny buttons; questions → reply with the answer
 
 In a group (pair it by sending /pair CODE there), Relay behaves like the
@@ -33,7 +34,7 @@ import time
 import httpx
 
 from .agent import Agent
-from .auth import _h  # pairing codes are stored hashed
+from .auth import _h, new_pairing_code  # pairing codes are stored hashed
 from .store import Store
 
 log = logging.getLogger("relay.telegram")
@@ -44,7 +45,8 @@ class TelegramBot:
 
     name = "telegram"
 
-    def __init__(self, token: str, agent: Agent, store: Store, transport=None, router=None, models=None):
+    def __init__(self, token: str, agent: Agent, store: Store, transport=None, router=None, models=None,
+                 app_url: str | None = None, public: bool = False):
         self.base = f"https://api.telegram.org/bot{token}"
         self.agent, self.store = agent, store
         self.http = httpx.AsyncClient(timeout=60, transport=transport)
@@ -53,6 +55,7 @@ class TelegramBot:
         self.question_messages: dict[tuple[int, int], int] = {}  # (chat, message) → approval id
         self.router = router
         self.models = models  # ModelManager, for /model
+        self.app_url, self.public = (app_url or "").rstrip("/") or None, public  # for /app
         self.me: dict | None = None
         self.roots: dict[tuple[int, int], int] = {}  # (chat, message) → root message of its reply chain
         self.typing: dict[int, asyncio.Task] = {}  # chat → "typing…" kept alive until Relay answers
@@ -100,7 +103,7 @@ class TelegramBot:
     async def say(self, chat_id: int, text: str, **kw) -> dict:
         return await self.call("sendMessage", chat_id=chat_id, text=text[:4000], **kw)
 
-    COMMANDS = [("model", "Which model runs; tap to switch"), ("status", "What's running and waiting for you"),
+    COMMANDS = [("app", "Open the full Relay app"), ("model", "Which model runs; tap to switch"), ("status", "What's running and waiting for you"),
                 ("tasks", "Recent tasks"), ("screen", "A screenshot of the Mac"), ("stop", "Stop the running task"),
                 ("help", "What I can do")]
 
@@ -152,6 +155,10 @@ class TelegramBot:
             return await self.say(chat, f"Added to task #{tid}.")
         if text in {"/start", "/help"}:
             return await self.say(chat, __doc__.split("\n\n", 2)[2])
+        if text == "/app":
+            if group:  # a sign-in link in a group would let every member in
+                return await self.say(chat, "Send /app to me in a private chat: the link signs a browser in.")
+            return await self.app_link(chat)
         if text == "/model" and self.models is not None:
             return await self.model_menu(chat)
         if text == "/status":
@@ -206,6 +213,21 @@ class TelegramBot:
         name = (msg.get("chat") or {}).get("username") or (msg.get("from") or {}).get("first_name") or "telegram"
         self.store.x("INSERT OR REPLACE INTO telegram_chats(chat_id,name,created_at) VALUES(?,?,?)", (chat, name, time.time()))
         await self.say(chat, "Paired. Send me anything you want your Mac to do.")
+
+    async def app_link(self, chat: int) -> dict:
+        """A fresh single-use pairing link to the full app. Only paired chats get here."""
+        if not self.app_url:
+            return await self.say(chat, "The full app away from home needs Tailscale: install it on the Mac and your "
+                                        "phone, sign in on both, and run the install line again. At home, open the "
+                                        "app at the Wi-Fi address the installer printed.")
+        code = new_pairing_code(self.store)
+        link = f"{self.app_url}/pair?code={code}"
+        where = ("any browser" if self.public else "Telegram, or a browser on a device with Tailscale")
+        return await self.say(chat, f"Open the full Relay app in {where}. The link signs in once and expires in 10 "
+                                    f"minutes:\n{link}\n\nOn a shared computer use a private window, and tap "
+                                    f"Settings → Unpair when you're done.",
+                              reply_markup={"inline_keyboard": [[{"text": "📱 Open Relay", "web_app": {"url": link}}]]},
+                              disable_web_page_preview=True)
 
     async def model_menu(self, chat: int) -> dict:
         st = self.models.status()

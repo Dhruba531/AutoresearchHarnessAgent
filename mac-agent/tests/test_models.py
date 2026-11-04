@@ -226,4 +226,41 @@ async def test_telegram_lists_its_commands(tmp_path, clean_env):
         await asyncio.sleep(0.01)
     task.cancel()
     cmds = next(b for n, b in calls if n == "setMyCommands")["commands"]
-    assert cmds[0] == {"command": "model", "description": "Which model runs; tap to switch"}
+    assert [c["command"] for c in cmds][:2] == ["app", "model"]
+    assert {"command": "model", "description": "Which model runs; tap to switch"} in cmds
+
+
+@pytest.mark.asyncio
+async def test_telegram_app_link(tmp_path, clean_env):
+    import httpx
+
+    from macagent.auth import redeem_pairing_code
+    from macagent.telegram import TelegramBot
+
+    settings, store, m = make(tmp_path)
+    calls = []
+
+    def handler(req):
+        calls.append((req.url.path.rsplit("/", 1)[-1], json.loads(req.content or b"{}")))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    agent = Agent(settings, store, FakeHost(), lambda: None)
+    t = httpx.MockTransport(handler)
+    store.x("INSERT INTO telegram_chats(chat_id, name, created_at) VALUES (5, 'me', 0), (-9, 'team', 0)")
+    msg = lambda chat, kind="private": {"message": {"chat": {"id": chat, "type": kind}, "text": "/app", "from": {}}}
+
+    no_url = TelegramBot("1:a", agent, store, transport=t)
+    await no_url.handle(msg(5))
+    assert "needs Tailscale" in calls[-1][1]["text"]
+
+    bot = TelegramBot("1:a", agent, store, transport=t, app_url="https://mini.tail1.ts.net/", public=True)
+    await bot.handle(msg(-9, "group"))
+    assert "private chat" in calls[-1][1]["text"] and "pair?code" not in calls[-1][1]["text"]
+    await bot.handle(msg(5))
+    body = calls[-1][1]
+    url = body["reply_markup"]["inline_keyboard"][0][0]["web_app"]["url"]
+    assert url.startswith("https://mini.tail1.ts.net/pair?code=") and "any browser" in body["text"]
+    code = url.split("code=")[1]
+    assert redeem_pairing_code(store, code, "uni browser") and not redeem_pairing_code(store, code, "again")  # once
+    await bot.handle(msg(42))  # a stranger gets nothing
+    assert calls[-1][1].get("chat_id") != 42

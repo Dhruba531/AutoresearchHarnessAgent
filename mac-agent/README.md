@@ -169,6 +169,19 @@ Paired devices can be removed in Settings.
 and open `http://<mac-ip>:8765`. This is plain HTTP, so use it only on a
 network you trust, and never forward the port to the internet.
 
+### Any browser, anywhere (optional, Tailscale Funnel)
+
+With Tailscale set up, the installer asks whether to also open Relay to **any
+browser** (say, a university computer with nothing installed). If you say yes
+it runs `tailscale funnel --bg 8765`, which gives Relay a public HTTPS address.
+A browser still can't get in without a one-time pairing code: send **`/app`** to
+your Telegram bot for a link that signs in once and expires in 10 minutes (it
+also opens the app inside Telegram). `/app` only answers your paired private
+chat, never a group. On a shared computer use a private window and tap
+Settings → Unpair when you're done. Turn it off with `tailscale funnel reset`.
+This is a door from the internet to an agent that controls your Mac: leave it
+off if you don't need it.
+
 ### Add your other Macs (optional)
 
 In Settings → Machines, tap **Add a machine** and run the command it shows on

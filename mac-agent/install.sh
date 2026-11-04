@@ -233,6 +233,24 @@ main() {
     # The first time, Tailscale asks you to turn on HTTPS for your tailnet and prints a link: show it.
     if OUT="$("$TS" serve --bg "$PORT" 2>&1 </dev/null)"; then
       say "Shared privately on your tailnet: works from anywhere (uni, bus, mobile data)"
+      # Optional: any browser, even a computer without Tailscale (Tailscale Funnel). Off unless you say yes.
+      if [ -n "${RELAY_PUBLIC:-}" ]; then put RELAY_PUBLIC "$RELAY_PUBLIC"; fi
+      if ! grep -q '^RELAY_PUBLIC=' "$ENV_FILE" && (: < /dev/tty) 2>/dev/null; then
+        echo "  Optional: open Relay in ANY browser (e.g. a university computer) without Tailscale on it."
+        echo "  It gets a public web address; a browser still needs a one-time code (from /app in Telegram) to get in."
+        printf 'Allow any browser? [y/N]: '
+        read -r ANS < /dev/tty || ANS=n
+        case "$ANS" in [yY]*) put RELAY_PUBLIC 1 ;; *) put RELAY_PUBLIC 0 ;; esac
+      fi
+      if grep -q '^RELAY_PUBLIC=1' "$ENV_FILE"; then
+        if OUT="$("$TS" funnel --bg "$PORT" 2>&1 </dev/null)"; then
+          say "Open to any browser at https://$("$TS" status --json 2>/dev/null | sed -n 's/.*"DNSName": *"\([^"]*\)\.".*/\1/p' | head -1)"
+          echo "  Get a sign-in link any time: send /app to your Telegram bot. Turn it off: tailscale funnel reset"
+        else
+          echo "$OUT" | sed 's/^/  /'
+          echo "  Tailscale needs Funnel allowed first: open the link above, allow it, then run this script again."
+        fi
+      fi
     else
       echo "$OUT" | sed 's/^/  /'
       echo "  Tailscale needs one setting first: open the link above, turn on HTTPS, then run this script again."
