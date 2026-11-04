@@ -372,3 +372,28 @@ async def test_relay_says_when_the_mac_restarted(tmp_path, clean_env):
     assert not await announce_restart(R(), delay_s=0, boot=lambda: None)
     assert len(sent) == 1
     assert boot_time() is None or boot_time() < _t.time()
+
+
+@pytest.mark.asyncio
+async def test_app_link_finds_tailscale_that_started_later(tmp_path, clean_env):
+    import httpx
+
+    from macagent.telegram import TelegramBot
+
+    settings, store, m = make(tmp_path)
+    calls, ts = [], {"name": None}
+
+    def handler(req):
+        calls.append(json.loads(req.content or b"{}"))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    bot = TelegramBot("1:a", Agent(settings, store, FakeHost(), lambda: None), store,
+                      transport=httpx.MockTransport(handler),
+                      app_url=lambda: f"https://{ts['name']}" if ts["name"] else None)
+    store.x("INSERT INTO telegram_chats(chat_id, name, created_at) VALUES (5, 'me', 0)")
+    app = {"message": {"chat": {"id": 5, "type": "private"}, "text": "/app", "from": {}}}
+    await bot.handle(app)
+    assert "needs Tailscale" in calls[-1]["text"]
+    ts["name"] = "mini.tail1.ts.net"  # Tailscale came up after Relay started
+    await bot.handle(app)
+    assert calls[-1]["reply_markup"]["inline_keyboard"][0][0]["web_app"]["url"].startswith("https://mini.tail1.ts.net/pair")

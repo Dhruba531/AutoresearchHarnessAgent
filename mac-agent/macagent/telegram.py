@@ -53,7 +53,7 @@ class TelegramBot(Commands):
     name = "telegram"
 
     def __init__(self, token: str, agent: Agent, store: Store, transport=None, router=None, models=None,
-                 app_url: str | None = None, public: bool = False):
+                 app_url=None, public: bool = False):
         self.base = f"https://api.telegram.org/bot{token}"
         self.agent, self.store = agent, store
         self.http = httpx.AsyncClient(timeout=60, transport=transport)
@@ -62,7 +62,8 @@ class TelegramBot(Commands):
         self.question_messages: dict[tuple[int, int], int] = {}  # (chat, message) → approval id
         self.router = router
         self.models = models  # ModelManager, for /model
-        self.app_url, self.public = (app_url or "").rstrip("/") or None, public  # for /app
+        # for /app: a fixed address, or a function asked each time (Tailscale may start after Relay)
+        self._app_url, self.public = app_url, public
         self.me: dict | None = None
         self.roots: dict[tuple[int, int], int] = {}  # (chat, message) → root message of its reply chain
         self.typing: dict[int, asyncio.Task] = {}
@@ -245,16 +246,19 @@ class TelegramBot(Commands):
 
     async def app_link(self, chat: int) -> dict:
         """A fresh single-use pairing link to the full app. Only paired chats get here."""
-        if not self.app_url:
+        url = await asyncio.to_thread(self._app_url) if callable(self._app_url) else self._app_url
+        url = (url or "").rstrip("/") or None
+        if not url:
             return await self.say(chat, "The full app away from home needs Tailscale: install it on the Mac and your "
                                         "phone, sign in on both, and run the install line again. At home, open the "
                                         "app at the Wi-Fi address the installer printed.")
         code = new_pairing_code(self.store)
-        link = f"{self.app_url}/pair?code={code}"
+        link = f"{url}/pair?code={code}"
         where = ("any browser" if self.public else "Telegram, or a browser on a device with Tailscale")
         return await self.say(chat, f"Open the full Relay app in {where}. The link signs in once and expires in 10 "
                                     f"minutes:\n{link}\n\nOn a shared computer use a private window, and tap "
-                                    f"Settings → Unpair when you're done.",
+                                    f"Settings → Unpair when you're done. If the page doesn't load, run on the "
+                                    f"Mac: tailscale serve --bg {self.agent.settings.port}",
                               reply_markup={"inline_keyboard": [[{"text": "📱 Open Relay", "web_app": {"url": link}}]]},
                               disable_web_page_preview=True)
 

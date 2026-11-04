@@ -262,8 +262,10 @@ def cmd_serve(settings: Settings) -> None:
     if settings.telegram_token:
         from .telegram import TelegramBot
 
-        ts = tailscale_name()
-        app_url = os.environ.get("RELAY_PUBLIC_URL") or (f"https://{ts}" if ts else None)
+        def app_url() -> str | None:  # asked on every /app: Tailscale may come up after Relay does
+            ts = tailscale_name()
+            return os.environ.get("RELAY_PUBLIC_URL") or (f"https://{ts}" if ts else None)
+
         bot = TelegramBot(settings.telegram_token, agent, store, router=router, models=models, app_url=app_url,
                           public=os.environ.get("RELAY_PUBLIC") == "1" or bool(os.environ.get("RELAY_PUBLIC_URL")))
         agent.notifiers.append(bot)
