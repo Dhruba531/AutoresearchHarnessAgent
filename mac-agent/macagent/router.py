@@ -65,6 +65,7 @@ Pick a machine when the work needs a specific one.
 - answer_question: when a worker asked something and the user's message clearly answers it.
 - create_trigger / delete_trigger: when the user wants something to happen automatically ("whenever…").
 - remember: lasting facts about the user worth keeping.
+- switch_model: when the user asks to use another model or provider; then reply with what runs now.
 - read: follow an ID (W7, E12, thread:…, chat:web) when you need details you only have one line of — for \
 example to answer "did the thing from yesterday get fixed?".
 - ignore: for events that need nothing (say why).
@@ -118,6 +119,12 @@ ROUTER_TOOLS = [
                           config={"type": "object", "description": "kind-specific settings"},
                           instruction=_s("what to do each time it fires, in the user's words"))},
     {"name": "delete_trigger", "description": "Delete an automation.", "input_schema": _obj(trigger_id={"type": "integer"})},
+    {"name": "switch_model", "description": "Switch the AI model Relay runs on, when the user asks (e.g. 'use "
+     "gemini', 'switch to gpt nano', 'go back to claude'). Only providers listed under Models can be used.",
+     "input_schema": _obj(provider={"type": "string", "enum": ["gemini", "deepseek", "openai", "openrouter", "anthropic",
+                                                              "local"]},
+                          model=_s("main model id for tasks, if the user named one", True),
+                          router_model=_s("fast model id for chat, if the user named one", True))},
     {"name": "remember", "description": "Save a lasting fact about the user (never secrets).",
      "input_schema": _obj(fact=_s("one sentence"))},
     {"name": "ignore", "description": "Do nothing for an event.",
@@ -181,8 +188,9 @@ def _short(v: Any, n: int) -> str:
 
 class Router:
     def __init__(self, settings: Settings, store: Store, agent: Agent, adapter_factory, triggers=None,
-                 filter: Filter | None = None):
+                 filter: Filter | None = None, models=None):
         self.settings, self.store, self.agent = settings, store, agent
+        self.models = models  # ModelManager: lets the user switch model by asking
         self.adapter_factory = adapter_factory
         self.triggers = triggers
         self.filter = filter or Filter(store, adapter_factory)
@@ -340,6 +348,11 @@ class Router:
                          "ORDER BY id DESC LIMIT 25")
         pend = st.pending_approvals()
         lines = [f"Now: {now.strftime('%A %Y-%m-%d %H:%M %Z')}"]
+        if self.models is not None:
+            ms = self.models.status()
+            lines.append(f"Models: in use {ms['active']['provider']} (tasks {ms['active']['model']}, chat "
+                         f"{ms['active']['router_model']}); can switch to: " + ", ".join(
+                             f"{p['id']} [{', '.join(p['models'])}]" for p in ms["providers"] if p["has_key"]))
         lines.append("Running workers: " + ("; ".join(task_line(t) + (f" threads {st.threads_of(t['id'])}" if st.threads_of(t["id"]) else "")
                                                      for t in running if t) or "none"))
         if queued:
@@ -494,6 +507,18 @@ class Router:
                                                  f"X-Relay-Secret: {t['secret']}")
                 elif name == "delete_trigger" and self.triggers is not None:
                     self.triggers.delete(int(inp["trigger_id"]))
+                elif name == "switch_model":
+                    if self.models is None:
+                        out = "model switching is not available"
+                    elif not any(e["kind"] == "message" and e["source"].split(":", 1)[0] in {"web", "telegram"}
+                                 for e in batch):  # the owner's own chats only: not a group, email or automation
+                        out = "refused: only the user, in their own chat, can switch the model"
+                    else:
+                        self.models.use(str(inp.get("provider", "")), inp.get("model") or None,
+                                        inp.get("router_model") or None)
+                        self.agent.bus.publish({"type": "models"})
+                        a = self.models.status()["active"]
+                        out = f"now using {a['label']}: tasks {a['model']}, chat {a['router_model']}"
                 elif name == "remember":
                     fact = str(inp.get("fact", "")).strip()[:500]
                     if fact and not any(w in fact.lower() for w in ("password", "api key", "secret", "passcode")):

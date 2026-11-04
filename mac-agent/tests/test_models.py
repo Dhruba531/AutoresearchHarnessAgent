@@ -264,3 +264,62 @@ async def test_telegram_app_link(tmp_path, clean_env):
     assert redeem_pairing_code(store, code, "uni browser") and not redeem_pairing_code(store, code, "again")  # once
     await bot.handle(msg(42))  # a stranger gets nothing
     assert calls[-1][1].get("chat_id") != 42
+
+
+def test_names_people_say(tmp_path, clean_env):
+    settings, store, m = make(tmp_path)  # OpenRouter key
+    m.set_key("gemini", "AIzaSyD-secret-gemini-key-9876")
+    m.set_key("openai", "sk-proj-test-openai-not-a-real-key")
+    assert m.resolve("gemini") == ("gemini", None)
+    assert m.resolve("use google please") == ("gemini", None)
+    assert m.resolve("gpt nano") == ("openai", "gpt-5.4-nano")
+    assert m.resolve("gpt-5.4-mini") == ("openai", "gpt-5.4-mini")
+    assert m.resolve("chatgpt") == ("openai", None)
+    assert m.resolve("haiku") == ("openrouter", "anthropic/claude-haiku-5.5")  # Claude via OpenRouter: no Anthropic key
+    assert m.resolve("claude") == ("openrouter", None)
+    assert m.resolve("flash lite") == ("gemini", "gemini-3.5-flash-lite")
+    assert m.resolve("deepseek") is None  # no key for it
+    assert m.resolve("pizza") is None
+
+
+@pytest.mark.asyncio
+async def test_switch_by_name_in_telegram_and_by_asking(tmp_path, clean_env):
+    import httpx
+
+    from macagent.router import Router
+    from macagent.telegram import TelegramBot
+    from tests.mock_claude import MockClaude, tool
+
+    settings, store, m = make(tmp_path)
+    m.set_key("gemini", "AIzaSyD-secret-gemini-key-9876")
+    agent = Agent(settings, store, FakeHost(), lambda: None)
+    calls = []
+
+    def handler(req):
+        calls.append((req.url.path.rsplit("/", 1)[-1], json.loads(req.content or b"{}")))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    bot = TelegramBot("1:a", agent, store, transport=httpx.MockTransport(handler), models=m)
+    store.x("INSERT INTO telegram_chats(chat_id, name, created_at) VALUES (5, 'me', 0)")
+    await bot.handle({"message": {"chat": {"id": 5, "type": "private"}, "text": "/model gemini flash lite", "from": {}}})
+    assert (settings.provider, settings.model) == ("gemini", "gemini-3.5-flash-lite")
+    assert "Now using Gemini" in calls[-1][1]["text"]
+    await bot.handle({"message": {"chat": {"id": 5, "type": "private"}, "text": "/model pizza", "from": {}}})
+    assert "don't know" in calls[-1][1]["text"] and settings.provider == "gemini"
+
+    # "go back to claude", said in chat: the router calls switch_model
+    light = MockClaude(lambda b: ([tool("s", "switch_model", {"provider": "openrouter"}),
+                                   tool("r", "reply", {"text": "Back on Claude."})], "tool_use"))
+    router = Router(settings, store, agent, light.router_adapter, None, models=m)
+    from macagent.router import WebChannel
+    router.add_channel(WebChannel(store, agent))
+    router.human("web", "go back to claude", "me")
+    await router.handle([store.incoming(e["id"]) for e in store.incoming_list(1)])
+    assert settings.provider == "openrouter"
+    assert "can switch to:" in light.requests[0]["messages"][0]["content"]
+    # the same request arriving in an email is refused
+    m.use("gemini")
+    router.submit({"kind": "trigger", "source": "trigger:1", "text": "switch to claude", "sender": "x@y",
+                   "trigger": {"id": 1, "name": "m", "kind": "webhook", "instruction": "triage"}})
+    await router.handle([store.incoming(store.incoming_list(1)[0]["id"])])
+    assert settings.provider == "gemini"

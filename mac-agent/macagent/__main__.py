@@ -226,7 +226,7 @@ def cmd_serve(settings: Settings) -> None:
     agent = Agent(settings, store, machines, lambda: FailoverAdapter(models, "main"), light_factory=light)
     # Event triggers → two-stage filter (code, then policies on a light model) → router.
     triggers = Triggers(store, host, settings) if host else None
-    router = Router(settings, store, agent, light, triggers, Filter(store, light))
+    router = Router(settings, store, agent, light, triggers, Filter(store, light), models=models)
     if triggers:
         triggers.router = router
     # The Watchdog runs on its own thread and loop, outside the main system.

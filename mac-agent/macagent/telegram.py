@@ -11,7 +11,8 @@ obeyed; everything else is ignored.
   /tasks          → recent tasks
   /screen         → a screenshot of the Mac
   /stop           → cancel the running task
-  /model          → see which model runs, and switch with one tap
+  /model          → see which model runs, and switch with one tap; /model gemini (or nano, opus, local…)
+                    switches by name, and so does just asking ("use gemini")
   /app            → a one-time link that opens the full Relay app (inside Telegram, or any browser)
   approvals       → Approve / Deny buttons; questions → reply with the answer
 
@@ -159,8 +160,19 @@ class TelegramBot:
             if group:  # a sign-in link in a group would let every member in
                 return await self.say(chat, "Send /app to me in a private chat: the link signs a browser in.")
             return await self.app_link(chat)
-        if text == "/model" and self.models is not None:
-            return await self.model_menu(chat)
+        if (text == "/model" or text.startswith("/model ")) and self.models is not None:
+            name = text[len("/model"):].strip()
+            if not name:
+                return await self.model_menu(chat)
+            hit = self.models.resolve(name)
+            if hit is None:
+                return await self.say(chat, f"I don't know a model called “{name}” that you have a key for. "
+                                            "Send /model to see the choices.")
+            self.models.use(hit[0], hit[1])
+            self.agent.bus.publish({"type": "models"})
+            a = self.models.status()["active"]
+            return await self.say(chat, f"Now using {a['label']}: tasks on {a['model'].split('/')[-1]}, "
+                                        f"chat on {a['router_model'].split('/')[-1]}.")
         if text == "/status":
             return await self.say(chat, self.status_text())
         if text == "/tasks":

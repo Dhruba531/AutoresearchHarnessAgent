@@ -204,6 +204,35 @@ class ModelManager:
             self.store.put("model_prefs", prefs)
             self.store.put("model_choice", {"provider": provider, "model": main, "router_model": fast})
 
+    def resolve(self, text: str) -> tuple[str, str | None] | None:
+        """A name as people say it ("gemini", "gpt nano", "opus", "local") → (provider, main model or None).
+        Prefers providers you have a key for."""
+        t = " " + re.sub(r"[^a-z0-9.:/-]+", " ", text.lower()) + " "
+        usable = [p for p in self.fallback()["order"] if self.has_key(p)]
+        # an exact model id first ("gpt-5.4-nano", "anthropic/claude-haiku-5.5")
+        for pid in usable:
+            for m in self.presets(pid) + [self.models_for(pid)[0]]:
+                if f" {m.lower()} " in t or f" {short(m).lower()} " in t:
+                    return pid, m
+        nick = {"opus": "opus", "sonnet": "sonnet", "haiku": "haiku", "nano": "nano", "mini": "mini",
+                "lite": "lite", "reasoner": "reasoner", "32b": "32b"}
+        word = next((v for k, v in nick.items() if f" {k} " in t or f"-{k} " in t), None)
+        alias = {"gemini": "gemini", "google": "gemini", "deepseek": "deepseek", "openai": "openai", "gpt": "openai",
+                 "chatgpt": "openai", "openrouter": "openrouter", "anthropic": "anthropic", "claude": "anthropic",
+                 "local": "local", "ollama": "local", "qwen": "local"}
+        named = [v for k, v in alias.items() if f" {k} " in t or t.strip().startswith(k)]
+        if "claude" in t and "anthropic" not in usable and "openrouter" in usable:
+            named = ["openrouter"] + named  # Claude through OpenRouter when there is no Anthropic key
+        candidates = [p for p in dict.fromkeys(named) if p in usable] or (usable if word else [])
+        for pid in candidates:
+            if word:
+                hit = next((m for m in self.presets(pid) if word in short(m).lower()), None)
+                if hit:
+                    return pid, hit
+            elif pid in named:
+                return pid, None
+        return None
+
     def apply_saved(self) -> None:
         c = self.store.get("model_choice")
         if c and c.get("provider") in PROVIDERS and self.has_key(c["provider"]):
