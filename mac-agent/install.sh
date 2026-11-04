@@ -11,7 +11,7 @@
 # Options (environment variables):
 #   RELAY_DIR=~/Relay            where the code lives
 #   RELAY_BRANCH=…               which branch to install
-#   ANTHROPIC_API_KEY / DEEPSEEK_API_KEY   skip the key prompt
+#   ANTHROPIC_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY   skip the key prompt
 set -euo pipefail
 
 REPO="https://github.com/Dhruba531/AutoresearchHarnessAgent.git"
@@ -34,7 +34,15 @@ main() {
   for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
     if command -v "$c" >/dev/null && "$c" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then PY="$c"; break; fi
   done
-  [ -n "$PY" ] || die "Python 3.10 or newer is needed. Install it with: brew install python"
+  if [ -z "$PY" ]; then
+    # No Homebrew needed: uv installs a private Python 3.12 into ~/.local (nothing system-wide).
+    say "Python 3.10+ not found; installing Python 3.12 with uv"
+    export PATH="$HOME/.local/bin:$PATH"
+    command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null </dev/null
+    command -v uv >/dev/null || die "Could not install uv. Install Python 3.10+ from python.org, then run this again."
+    uv python install 3.12 </dev/null >/dev/null
+    PY="$(uv python find 3.12)"
+  fi
 
   # 1. The code: use this checkout if the script is run from one, else clone or update.
   SRC="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
@@ -69,16 +77,39 @@ main() {
     printf '%s=%s\n' "$1" "$2" >> "$ENV_FILE.tmp" && mv "$ENV_FILE.tmp" "$ENV_FILE" && chmod 600 "$ENV_FILE"
   }
   if [ -n "${ANTHROPIC_API_KEY:-}" ]; then put ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"; fi
+  if [ -n "${OPENROUTER_API_KEY:-}" ]; then put OPENROUTER_API_KEY "$OPENROUTER_API_KEY"; put RELAY_PROVIDER openrouter; fi
+  if [ -n "${OPENAI_API_KEY:-}" ]; then put OPENAI_API_KEY "$OPENAI_API_KEY"; put RELAY_PROVIDER openai; fi
   if [ -n "${DEEPSEEK_API_KEY:-}" ]; then put DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"; grep -q '^RELAY_PROVIDER=' "$ENV_FILE" || put RELAY_PROVIDER deepseek; fi
-  if ! grep -qE '^(ANTHROPIC|DEEPSEEK|OPENAI)_API_KEY=.+' "$ENV_FILE"; then
+  # an OpenRouter key that an older version of this script filed as DeepSeek
+  OLD="$(grep '^DEEPSEEK_API_KEY=sk-or-' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+  if [ -n "$OLD" ]; then
+    grep -v '^DEEPSEEK_API_KEY=' "$ENV_FILE" > "$ENV_FILE.tmp" || true; mv "$ENV_FILE.tmp" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+    put OPENROUTER_API_KEY "$OLD"; put RELAY_PROVIDER openrouter; echo "  Moved your OpenRouter key to OPENROUTER_API_KEY."
+  fi
+  unset OLD
+  if ! grep -qE '^(ANTHROPIC|DEEPSEEK|OPENAI|OPENROUTER)_API_KEY=.+' "$ENV_FILE"; then
     (: < /dev/tty) 2>/dev/null || die "No API key and no terminal to ask in. Re-run with ANTHROPIC_API_KEY=sk-ant-… in front of the command."
-    printf 'Paste your Anthropic API key (sk-ant-…), or a DeepSeek key (sk-…). It is not shown: '
+    printf 'Paste your API key: Anthropic (sk-ant-…), OpenRouter (sk-or-…), OpenAI or DeepSeek. It is not shown: '
     read -rs KEY < /dev/tty || die "Could not read the key."; echo
     [ -n "$KEY" ] || die "No key entered."
     case "$KEY" in
-      sk-ant-*) put ANTHROPIC_API_KEY "$KEY" ;;
-      *) put DEEPSEEK_API_KEY "$KEY"; put RELAY_PROVIDER deepseek
-         echo "  Saved as a DeepSeek key. (DeepSeek can't see the screen; Relay uses native Mac tools with it.)" ;;
+      sk-ant-*) put ANTHROPIC_API_KEY "$KEY"; put RELAY_PROVIDER anthropic ;;
+      sk-or-*) put OPENROUTER_API_KEY "$KEY"; put RELAY_PROVIDER openrouter
+         echo "  Saved as an OpenRouter key: Claude Opus 5.5 for tasks, Haiku 5.5 for chat. Through OpenRouter Relay"
+         echo "  uses native Mac tools (apps, files, shell, Mail, Calendar), not screen clicking; that needs an Anthropic key." ;;
+      *)
+        # OpenAI and DeepSeek keys both start with sk-: project keys are OpenAI, 32 hex digits are DeepSeek
+        WHO=""
+        case "$KEY" in sk-proj-*|sk-svcacct-*|sk-admin-*) WHO=openai ;; esac
+        if [ -z "$WHO" ] && printf '%s' "$KEY" | grep -qE '^sk-[0-9a-f]{32}$'; then WHO=deepseek; fi
+        if [ -z "$WHO" ]; then
+          printf 'Is that an OpenAI or a DeepSeek key? [o/d]: '
+          read -r ANS < /dev/tty || ANS=""
+          case "$ANS" in [oO]*) WHO=openai ;; [dD]*) WHO=deepseek ;; *) die "Run it again and answer o or d." ;; esac
+        fi
+        if [ "$WHO" = openai ]; then put OPENAI_API_KEY "$KEY"; put RELAY_PROVIDER openai; else put DEEPSEEK_API_KEY "$KEY"; put RELAY_PROVIDER deepseek; fi
+        echo "  Saved as a$( [ "$WHO" = openai ] && echo "n OpenAI" || echo " DeepSeek") key. Relay uses native Mac tools with it"
+        echo "  (apps, files, shell, Mail, Calendar), not screen clicking; that needs an Anthropic key." ;;
     esac
     unset KEY
   fi

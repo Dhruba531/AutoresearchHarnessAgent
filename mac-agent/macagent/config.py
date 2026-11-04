@@ -60,6 +60,7 @@ class Settings:
     anthropic_api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", ""))
     deepseek_api_key: str = field(default_factory=lambda: os.environ.get("DEEPSEEK_API_KEY", ""))
     openai_api_key: str = field(default_factory=lambda: os.environ.get("OPENAI_API_KEY", ""))
+    openrouter_api_key: str = field(default_factory=lambda: os.environ.get("OPENROUTER_API_KEY", ""))
 
     # Layers: a light router model talks to you and dispatches; heavy workers run tasks.
     router_model: str = field(default_factory=lambda: os.environ.get("RELAY_ROUTER_MODEL", ""))
@@ -97,11 +98,16 @@ class Settings:
             pass
         if not self.router_model:
             self.router_model = {"anthropic": "claude-haiku-5-5", "deepseek": "deepseek-chat",
-                                 "openai": "gpt-4.1-mini"}.get(self.provider, "claude-haiku-5-5")
+                                 "openai": "gpt-4.1-mini", "openrouter": "anthropic/claude-haiku-5.5"}.get(
+                self.provider, "claude-haiku-5-5")
         if not self.model:
-            self.model = {"anthropic": "claude-opus-5-5", "deepseek": "deepseek-chat", "openai": "gpt-4.1"}.get(
-                self.provider, "claude-opus-5-5"
-            )
+            self.model = {"anthropic": "claude-opus-5-5", "deepseek": "deepseek-chat", "openai": "gpt-4.1",
+                          "openrouter": "anthropic/claude-opus-5.5"}.get(self.provider, "claude-opus-5-5")
+
+    def api_key(self) -> str:
+        """The key for the configured provider."""
+        return {"anthropic": self.anthropic_api_key, "deepseek": self.deepseek_api_key,
+                "openai": self.openai_api_key, "openrouter": self.openrouter_api_key}.get(self.provider, "")
 
     @property
     def db_path(self) -> Path:

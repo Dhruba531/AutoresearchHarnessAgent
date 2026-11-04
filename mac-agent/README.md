@@ -90,12 +90,14 @@ and an Anthropic API key.
 curl -fsSL https://raw.githubusercontent.com/Dhruba531/AutoresearchHarnessAgent/claude/festive-fermi-gb3xr7/mac-agent/install.sh | bash
 ```
 
-It downloads Relay into `~/Relay`, installs it, asks for your API key once
+It downloads Relay into `~/Relay` (and a private Python 3.12 via `uv` if the
+Mac has no Python 3.10+), installs it, asks for your API key once — Anthropic,
+OpenRouter, OpenAI or DeepSeek
 (hidden as you paste it, saved in `~/.relay/env` with owner-only access),
 checks permissions, starts Relay at login, shares it over Tailscale if you're
 signed in, and prints a pairing code and QR code for your phone. Run the same
 line again to update. To skip the key prompt, put `ANTHROPIC_API_KEY=sk-ant-…`
-before `bash`. The steps below do the same thing by hand.
+(or `OPENROUTER_API_KEY=…`, `OPENAI_API_KEY=…`) before `bash`. The steps below do the same thing by hand.
 
 ```bash
 git clone https://github.com/Dhruba531/AutoresearchHarnessAgent.git
@@ -220,8 +222,8 @@ notifications.
 | `ANTHROPIC_API_KEY` | — | Claude: required for screen control |
 | `RELAY_MODEL` | `claude-opus-5-5` | or `claude-sonnet-5-5` (faster and cheaper) |
 | `RELAY_EFFORT` | `medium` | `low`…`xhigh`; also settable from the phone |
-| `RELAY_PROVIDER` | `anthropic` | `deepseek` / `openai`: native tools only, no screen (these models can't see screenshots) |
-| `DEEPSEEK_API_KEY`, `OPENAI_API_KEY` | — | for those providers |
+| `RELAY_PROVIDER` | `anthropic` | `openrouter` / `openai` / `deepseek`: native Mac tools only, no screen clicking (Claude's computer-use toolset needs an Anthropic key) |
+| `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY` | — | for those providers. OpenRouter defaults to `anthropic/claude-opus-5.5` for tasks and `anthropic/claude-haiku-5.5` for chat; set `RELAY_MODEL` / `RELAY_ROUTER_MODEL` to any OpenRouter model id |
 | `RELAY_ROUTER_MODEL` | `claude-haiku-5-5` | the light routing model (`deepseek-chat` with DeepSeek) |
 | `RELAY_WORKERS` | `3` | tasks that run at once (screen work still takes turns) |
 | `RELAY_ROUTER_BATCH_MS`, `RELAY_ROUTER_MAX_WAIT_MS` | `1200`, `4000` | how long the router gathers a batch |

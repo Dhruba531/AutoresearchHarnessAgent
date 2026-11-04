@@ -64,8 +64,16 @@ class Turn:
     meta: dict = field(default_factory=dict)
 
 
+def _price(model: str) -> tuple[float, float, float]:
+    """Price by id; OpenRouter ids ("anthropic/claude-opus-5.5") map onto the native ones."""
+    if model in PRICES:
+        return PRICES[model]
+    bare = model.split("/", 1)[-1].split(":", 1)[0]
+    return PRICES.get(bare) or PRICES.get(bare.replace(".", "-")) or (10.0, 50.0, 1.0)
+
+
 def cost(model: str, tin: int, tout: int, cread: int = 0, cwrite: int = 0) -> float:
-    pin, pout, pread = PRICES.get(model, (10.0, 50.0, 1.0))
+    pin, pout, pread = _price(model)
     return (tin * pin + tout * pout + cread * pread + cwrite * pin * 1.25) / 1_000_000
 
 
@@ -141,13 +149,13 @@ class ClaudeAdapter:
 
 
 class OpenAICompatAdapter:
-    """DeepSeek / OpenAI chat completions with function calling (no screen)."""
+    """DeepSeek / OpenAI / OpenRouter chat completions with function calling (no screen)."""
 
     can_see_screen = False
 
     def __init__(self, provider: str, api_key: str, model: str, transport: httpx.AsyncBaseTransport | None = None):
         self.provider, self.model, self.key = provider, model, api_key
-        self.base = "https://api.deepseek.com" if provider == "deepseek" else "https://api.openai.com/v1"
+        self.base = BASE_URLS.get(provider, BASE_URLS["openai"])
         self.transport = transport
 
     @staticmethod
@@ -192,8 +200,10 @@ class OpenAICompatAdapter:
         }
         try:
             async with httpx.AsyncClient(timeout=600, transport=self.transport) as http:
-                r = await http.post(f"{self.base}/chat/completions", json=body,
-                                    headers={"Authorization": f"Bearer {self.key}"})
+                headers = {"Authorization": f"Bearer {self.key}"}
+                if self.provider == "openrouter":
+                    headers["X-Title"] = "Relay"
+                r = await http.post(f"{self.base}/chat/completions", json=body, headers=headers)
         except httpx.HTTPError as exc:
             raise LLMError(f"Could not reach {self.provider}: {exc}") from exc
         if r.status_code != 200:
@@ -212,8 +222,21 @@ class OpenAICompatAdapter:
         usage = data.get("usage") or {}
         tin, tout = int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
         hit = int(usage.get("prompt_cache_hit_tokens", 0))
+        # OpenRouter reports what the call actually cost; otherwise price it from the table
+        usd = usage.get("cost") if isinstance(usage.get("cost"), (int, float)) else cost(self.model, tin - hit, tout, hit)
         return Turn(content, "tool_use" if msg.get("tool_calls") else "end_turn", self.model, tin - hit, tout, hit, 0,
-                    cost(self.model, tin - hit, tout, hit))
+                    float(usd))
+
+
+BASE_URLS = {"deepseek": "https://api.deepseek.com", "openai": "https://api.openai.com/v1",
+             "openrouter": "https://openrouter.ai/api/v1"}
+
+
+def _compat_key(settings) -> str:
+    key = settings.api_key()
+    if not key:
+        raise LLMError(f"Set {settings.provider.upper()}_API_KEY")
+    return key
 
 
 def make_router_adapter(settings) -> ClaudeAdapter | OpenAICompatAdapter:
@@ -221,19 +244,13 @@ def make_router_adapter(settings) -> ClaudeAdapter | OpenAICompatAdapter:
     if settings.provider == "anthropic":
         return ClaudeAdapter(settings.anthropic_api_key, settings.router_model, "low", screen=False, features=set(),
                              max_tokens=4000)
-    key = settings.deepseek_api_key if settings.provider == "deepseek" else settings.openai_api_key
-    if not key:
-        raise LLMError(f"Set {'DEEPSEEK' if settings.provider == 'deepseek' else 'OPENAI'}_API_KEY")
-    return OpenAICompatAdapter(settings.provider, key, settings.router_model)
+    return OpenAICompatAdapter(settings.provider, _compat_key(settings), settings.router_model)
 
 
 def make_adapter(settings) -> ClaudeAdapter | OpenAICompatAdapter:
     if settings.provider == "anthropic":
         return ClaudeAdapter(settings.anthropic_api_key, settings.model, settings.effort)
-    key = settings.deepseek_api_key if settings.provider == "deepseek" else settings.openai_api_key
-    if not key:
-        raise LLMError(f"Set {'DEEPSEEK' if settings.provider == 'deepseek' else 'OPENAI'}_API_KEY")
-    return OpenAICompatAdapter(settings.provider, key, settings.model)
+    return OpenAICompatAdapter(settings.provider, _compat_key(settings), settings.model)
 
 
 __all__ = ["ClaudeAdapter", "OpenAICompatAdapter", "Turn", "LLMError", "make_adapter", "cost", "time"]
