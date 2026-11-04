@@ -72,17 +72,19 @@ def cost(model: str, tin: int, tout: int, cread: int = 0, cwrite: int = 0) -> fl
 class ClaudeAdapter:
     provider = "anthropic"
 
-    def __init__(self, api_key: str, model: str, effort: str = "medium", client: anthropic.AsyncAnthropic | None = None):
+    def __init__(self, api_key: str, model: str, effort: str = "medium", client: anthropic.AsyncAnthropic | None = None,
+                 *, screen: bool = True, features: set[str] | None = None, max_tokens: int = 16_000):
         self.model = model
         self.effort = effort
         self.client = client or anthropic.AsyncAnthropic(api_key=api_key or None, timeout=900.0, max_retries=3)
-        self.features = set(FEATURES)
-        self.can_see_screen = model in SCREEN_MODELS
+        self.features = set(FEATURES) if features is None else set(features)
+        self.can_see_screen = screen and model in SCREEN_MODELS
+        self.max_tokens = max_tokens
 
     def _kwargs(self, system: str, history: list[dict], tools: list[dict]) -> dict:
         kw: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": 16_000,
+            "max_tokens": self.max_tokens,
             "system": system,
             "messages": history,
             "tools": tools + ([COMPUTER_TOOLSET] if self.can_see_screen else []),
@@ -212,6 +214,17 @@ class OpenAICompatAdapter:
         hit = int(usage.get("prompt_cache_hit_tokens", 0))
         return Turn(content, "tool_use" if msg.get("tool_calls") else "end_turn", self.model, tin - hit, tout, hit, 0,
                     cost(self.model, tin - hit, tout, hit))
+
+
+def make_router_adapter(settings) -> ClaudeAdapter | OpenAICompatAdapter:
+    """The light model for the router: no screen, no betas, short outputs."""
+    if settings.provider == "anthropic":
+        return ClaudeAdapter(settings.anthropic_api_key, settings.router_model, "low", screen=False, features=set(),
+                             max_tokens=4000)
+    key = settings.deepseek_api_key if settings.provider == "deepseek" else settings.openai_api_key
+    if not key:
+        raise LLMError(f"Set {'DEEPSEEK' if settings.provider == 'deepseek' else 'OPENAI'}_API_KEY")
+    return OpenAICompatAdapter(settings.provider, key, settings.router_model)
 
 
 def make_adapter(settings) -> ClaudeAdapter | OpenAICompatAdapter:

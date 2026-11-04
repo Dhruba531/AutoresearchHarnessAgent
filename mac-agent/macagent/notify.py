@@ -1,9 +1,10 @@
 """Push notifications through ntfy (https://ntfy.sh or a self-hosted server).
 
-Subscribe to your topic in the ntfy phone app; Relay posts when it needs an
-approval or finishes a task. Pick a long, unguessable topic name — anyone who
-knows it can read the notifications. Notifications carry summaries only;
-approving happens in the Relay app or Telegram.
+Subscribe to your topic in the ntfy phone app. Relay posts when it needs an
+approval, and the router's messages that you did not just ask for (a task
+finishing, a trigger firing). Pick a long, unguessable topic name — anyone who
+knows it can read the notifications. Approving happens in the Relay app or
+Telegram, never from a notification.
 """
 
 from __future__ import annotations
@@ -28,9 +29,5 @@ class Ntfy:
         kind = "Question" if approval["kind"] == "question" else f"Approve? ({approval['risk']})"
         await self._post(f"Relay · {kind}", f"{approval['summary']}\n\nTask: {task['title']}", "high", "raised_hand")
 
-    async def finished(self, task: dict) -> None:
-        if task["status"] not in {"done", "failed", "blocked"}:
-            return
-        icon = {"done": "white_check_mark", "failed": "x", "blocked": "warning"}[task["status"]]
-        body = (task.get("result") or task.get("error") or "")[:1500]
-        await self._post(f"Relay · {task['status']}: {task['title']}", body, "default", icon)
+    async def message(self, title: str, text: str) -> None:
+        await self._post(title, text[:1500], "default", "speech_balloon")

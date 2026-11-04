@@ -17,7 +17,8 @@ from macagent.llm import ClaudeAdapter
 
 class MockClaude:
     def __init__(self, turns, reject_features: set[str] | None = None):
-        self.turns = list(turns)
+        self.script = turns if callable(turns) else None
+        self.turns = [] if callable(turns) else list(turns)
         self.requests: list[dict] = []
         self.reject = reject_features or set()
         transport = httpx2.MockTransport(self.handle)
@@ -32,7 +33,9 @@ class MockClaude:
                 return httpx2.Response(400, json={"type": "error", "error": {
                     "type": "invalid_request_error", "message": f"unsupported beta: {feat}"}})
         self.requests.append(body)
-        if not self.turns:
+        if callable(self.script):
+            content, stop = self.script(body)
+        elif not self.turns:
             content, stop = [{"type": "text", "text": "Done."}], "end_turn"
         else:
             content, stop = self.turns.pop(0)(body)
@@ -44,6 +47,10 @@ class MockClaude:
 
     def adapter(self):
         return ClaudeAdapter("test", "claude-opus-5-5", "medium", client=self.client)
+
+    def router_adapter(self):
+        return ClaudeAdapter("test", "claude-haiku-5-5", "low", client=self.client, screen=False, features=set(),
+                             max_tokens=4000)
 
 
 def tool(id_, name, inp, toolset=None):

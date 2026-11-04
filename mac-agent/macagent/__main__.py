@@ -167,23 +167,33 @@ def cmd_serve(settings: Settings) -> None:
 
     from .agent import Agent
     from .host import make_host
-    from .llm import make_adapter
+    from .llm import make_adapter, make_router_adapter
     from .notify import Ntfy
+    from .router import Router, WebChannel
     from .server import create_app
     from .store import Store
+    from .triggers import Triggers
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     store = Store(str(settings.db_path))
     host = make_host(settings.fake_host, settings.screen_max_edge)
+    # Worker layer: heavy model, isolated context per task, parallel, one screen lease.
     agent = Agent(settings, store, host, lambda: make_adapter(settings))
+    # Event triggers feed the router; the router is the only thing that talks to people.
+    triggers = Triggers(store, host, settings)
+    router = Router(settings, store, agent, lambda: make_router_adapter(settings), triggers)
+    triggers.router = router
+    ntfy = Ntfy(settings.ntfy_server, settings.ntfy_topic) if settings.ntfy_topic else None
+    if ntfy:
+        agent.notifiers.append(ntfy)
+    router.add_channel(WebChannel(store, agent, ntfy))
     bot = None
-    if settings.ntfy_topic:
-        agent.notifiers.append(Ntfy(settings.ntfy_server, settings.ntfy_topic))
     if settings.telegram_token:
         from .telegram import TelegramBot
 
-        bot = TelegramBot(settings.telegram_token, agent, store)
+        bot = TelegramBot(settings.telegram_token, agent, store, router=router)
         agent.notifiers.append(bot)
+        router.add_channel(bot)
 
     caffeinate = None
     if settings.keep_awake and sys.platform == "darwin" and shutil.which("caffeinate"):
@@ -193,10 +203,11 @@ def cmd_serve(settings: Settings) -> None:
     def background():
         return [bot.run()] if bot else []
 
-    app = create_app(settings, store, agent, background)
+    app = create_app(settings, store, agent, background, router=router, triggers=triggers)
     from .auth import list_devices
 
-    print(f"Relay {host.name} host · {settings.provider}/{settings.model} · policy {settings.policy}")
+    print(f"Relay {host.name} host · router {settings.router_model} · workers {settings.model} ×{settings.max_workers}"
+          f" · policy {settings.policy}")
     if not list_devices(store):
         cmd_pair(settings)
     try:

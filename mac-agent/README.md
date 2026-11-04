@@ -6,21 +6,57 @@ you're away. It works across apps, files, Calendar, Reminders, Notes, Mail and
 Messages, can see and drive the whole screen, and **asks you before anything
 that sends, deletes or changes things**.
 
+## Architecture: a router, workers, and triggers
+
+Relay follows the super-agent design from "How DeepSeek SuperAgents Work":
+
 ```
- phone (Relay web app / Telegram)  ──HTTPS via Tailscale──▶  Mac mini
-   tasks · live steps · approvals                             Relay daemon
-   live screen you can tap & type on                            ├─ Claude computer use (screen, mouse, keys)
-                                                                ├─ native tools (shell, files, Spotlight,
-                                                                │  Calendar, Reminders, Notes, Mail, Messages)
-                                                                └─ approvals, schedule, memory, spend caps
+  channels                    ③ ROUTING LAYER                      WORKER LAYER (×RELAY_WORKERS)
+  phone app (Chat) ─┐         light model (Claude Haiku 5.5)       most capable model (Claude Opus 5.5)
+  Telegram ─────────┼──────▶  • the one place humans talk to  ───▶ • isolated context per task
+  (more channels)  ─┘         • NO task execution, no Mac tools     • full Mac tools + computer use
+                              • replies, dispatches, steers,        • approvals enforced in code
+  ⑤ EVENT TRIGGERS            answers worker questions            • one worker holds the screen
+  folder · mail · calendar ─▶ • batches events: many → 1 call        lease at a time; others run
+  system sensors · webhooks   • results come back here and are      in parallel
+                                reported to the channel that asked
 ```
+
+- **Routing layer** (`router.py`). Every human message from every channel,
+  every trigger event and every finished task goes to one router.
+  - Events that arrive together are batched into a single call to a light,
+    cheap model.
+  - It can only talk and dispatch: reply, start a worker task with
+    self-contained instructions, add a detail to a task, cancel, pause or
+    resume one, answer a worker's question, manage triggers, and remember
+    facts.
+  - It has no Mac tools, and it cannot approve anything. Approvals are the
+    buttons on your phone.
+  - Without a model key it falls back to deterministic routing: every message
+    becomes a task, and results are reported back.
+- **Worker layer** (`agent.py`). Each task runs in its own context on the most
+  capable model, with all the tools.
+  - Several run in parallel (3 by default).
+  - The screen is shared, so a worker takes the screen lease on its first
+    screen action and keeps it until it finishes; other screen work waits its
+    turn.
+- **Event-driven triggers** (`triggers.py`). These are things happening
+  around the Mac, each paired with a standing instruction ("file receipts
+  into Documents/Receipts"):
+  - new files in a folder, unread email, or an upcoming calendar event;
+  - low disk or battery;
+  - a webhook from iOS Shortcuts, IFTTT or Home Assistant.
+
+  The router decides what each event needs. You can create triggers in
+  Settings, or just say "whenever…" in Chat.
 
 ## What it does
 
-- **Tasks in plain language.** "Summarize my unread email", "Move last week's
+- **Chat with your Mac.** "Summarize my unread email", "Move last week's
   screenshots into a folder", "Book the 7pm slot on the gym site", "Text Sam
-  I'm running late". Each task is a conversation: you can add details while it
-  runs or follow up after it finishes.
+  I'm running late". The router answers status questions itself, hands real
+  work to workers, and tells you how each task went. You can also open any
+  task to watch it step by step and send it follow-ups.
 - **Works while you're away.** Tasks run in the background on the Mac whether
   or not your phone is connected. You can schedule them for later, or repeat
   them hourly, daily, on weekdays or weekly ("every weekday at 8:30, brief me
@@ -152,7 +188,8 @@ Screen control needs a **logged-in, unlocked GUI session**:
 **Telegram** works like nudging Muse over WhatsApp. Create a bot with
 @BotFather, add `RELAY_TELEGRAM_TOKEN=…` to `~/.relay/env`, restart Relay, and
 send `/pair CODE` to the bot with a code from `python -m macagent pair`. Then
-message it tasks; approvals arrive as ✅/⛔ buttons, and questions as replies.
+message it like the Chat tab: your messages go to the router. Approvals
+arrive as ✅/⛔ buttons, and workers' questions as messages you reply to.
 `/screen` sends a screenshot, `/status` shows what's running, and `/stop`
 cancels it. It uses long polling, so nothing needs to be exposed to the
 internet. Only paired chats are obeyed.
@@ -171,6 +208,9 @@ notifications.
 | `RELAY_EFFORT` | `medium` | `low`…`xhigh`; also settable from the phone |
 | `RELAY_PROVIDER` | `anthropic` | `deepseek` / `openai`: native tools only, no screen (these models can't see screenshots) |
 | `DEEPSEEK_API_KEY`, `OPENAI_API_KEY` | — | for those providers |
+| `RELAY_ROUTER_MODEL` | `claude-haiku-5-5` | the light routing model (`deepseek-chat` with DeepSeek) |
+| `RELAY_WORKERS` | `3` | tasks that run at once (screen work still takes turns) |
+| `RELAY_ROUTER_BATCH_MS`, `RELAY_ROUTER_MAX_WAIT_MS` | `1200`, `4000` | how long the router gathers a batch |
 | `RELAY_POLICY` | `balanced` | `careful` / `balanced` / `autonomous` |
 | `RELAY_DAILY_CAP_USD` | `10` | stop when today's spend reaches this |
 | `RELAY_MAX_STEPS` | `80` | per task, before it pauses for a follow-up |
@@ -184,7 +224,9 @@ notifications.
 
 | File | Role |
 | --- | --- |
-| `macagent/agent.py` | task queue, model↔tool loop, approvals, pause/take-over, schedule, budget |
+| `macagent/router.py` | routing layer: channels, batching, light model, dispatch-only tools, fallback |
+| `macagent/triggers.py` | event triggers: folder, mail, calendar, system sensors, webhooks |
+| `macagent/agent.py` | worker layer: parallel pool, screen lease, model↔tool loop, approvals, pause/take-over, schedule, budget |
 | `macagent/llm.py` | Claude via the `anthropic` SDK (computer toolset, progress notes, context clearing, refusal fallback, caching); DeepSeek/OpenAI adapter |
 | `macagent/tools.py` | native tools, their schemas, and approval summaries |
 | `macagent/policy.py` | risk tiers, shell/AppleScript/path classification |
@@ -214,6 +256,13 @@ python -m pytest
 
 The tests run the real Anthropic SDK against a mock transport, on the
 virtual desktop. They cover:
+
+- the router batching a burst into one light-model call with no Mac tools,
+  dispatching, reporting back, answering questions but never approvals, and
+  its no-model fallback;
+- parallel workers taking turns on the screen;
+- folder triggers (partial downloads, stable files, single fire) and
+  webhook secrets;
 
 - screen batches, `toolset_name` echoes and the halt-after-failure rule;
 - approvals over the app and Telegram, denials and `ask_user`;

@@ -1,7 +1,12 @@
-"""The agent: a task queue, the model ↔ tools loop, approvals, and events.
+"""The worker layer: a task queue, the model ↔ tools loop, approvals, events.
 
-Tasks run one at a time (they share one screen), in the background, whether
-or not a phone is connected. Each task is a conversation: you can send
+Workers are the heavy layer of the super-agent design: each task runs in its
+own isolated context (its own conversation history) on the most capable
+model, with the full tool set. Up to RELAY_WORKERS tasks run in parallel;
+the screen is a single shared resource, so a worker takes a *screen lease*
+on its first computer action and holds it until it finishes — others wait.
+Tasks reach workers from the router (router.py), schedules, or the API, and
+run in the background whether or not a phone is connected. Each task is a conversation: you can send
 follow-ups while it runs (delivered at the next step) or after it finishes
 (it picks up where it left off). Every model step, tool call, approval and
 screenshot is recorded as an event the phone renders live.
@@ -62,7 +67,6 @@ purpose. Never store secrets with remember.
 
 class Notifier(Protocol):
     async def approval(self, approval: dict, task: dict) -> None: ...
-    async def finished(self, task: dict) -> None: ...
 
 
 class Bus:
@@ -110,10 +114,12 @@ class Agent:
         self.adapter_factory = adapter_factory
         self.bus = Bus()
         self.notifiers: list[Notifier] = []
+        self.listeners: list = []  # called with the task row when a task ends (the router)
         self.waiting: dict[int, asyncio.Future] = {}
         self.inbox: dict[int, list[str]] = {}
-        self.current: int | None = None
-        self.runner: asyncio.Task | None = None
+        self.running: dict[int, asyncio.Task] = {}
+        self.screen_owner: int | None = None
+        self.screen_lock: asyncio.Lock | None = None
         self.paused: dict[int, asyncio.Event] = {}
         self.wake = asyncio.Event()
         self.worker: asyncio.Task | None = None
@@ -129,44 +135,73 @@ class Agent:
 
     def start(self) -> None:
         self.recover()
-        self.worker = asyncio.create_task(self._work(), name="relay-worker")
+        self.screen_lock = asyncio.Lock()
+        self.worker = asyncio.create_task(self._work(), name="relay-dispatcher")
 
     async def stop(self) -> None:
-        for t in (self.runner, self.worker):
+        for t in [self.worker, *self.running.values()]:
             if t:
                 t.cancel()
 
+    @property
+    def current(self) -> int | None:
+        """The task on screen, else the most recently started running task."""
+        if self.screen_owner is not None:
+            return self.screen_owner
+        return max(self.running) if self.running else None
+
     async def _work(self) -> None:
         while True:
-            task = self.store.next_runnable()
-            if task is None:
-                self.wake.clear()
-                try:
-                    await asyncio.wait_for(self.wake.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    pass
-                continue
-            self.current = task["id"]
-            self.runner = asyncio.create_task(self._run(task["id"]))
+            while len(self.running) < max(1, self.settings.max_workers):
+                task = self.store.next_runnable()
+                if task is None:
+                    break
+                tid = task["id"]
+                self.store.update_task(tid, status="running")  # claim it before the coroutine starts
+                job = asyncio.create_task(self._run(tid), name=f"relay-task-{tid}")
+                self.running[tid] = job
+                job.add_done_callback(lambda fut, tid=tid: self._finished(tid, fut))
+            self.wake.clear()
             try:
-                await self.runner
-            except asyncio.CancelledError:
-                if self.worker and self.worker.cancelling():
-                    raise
-            except Exception:  # never let one task kill the worker
-                log.exception("task %s crashed", task["id"])
-            finally:
-                self.current, self.runner = None, None
+                await asyncio.wait_for(self.wake.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                pass
+
+    def _finished(self, tid: int, fut: asyncio.Task) -> None:
+        self.running.pop(tid, None)
+        self._release_screen(tid)
+        if not fut.cancelled() and fut.exception() is not None:  # never let one task kill the pool
+            log.error("task %s crashed", tid, exc_info=fut.exception())
+            self.store.update_task(tid, status="failed", error=f"Internal error: {fut.exception()}", ended_at=time.time())
+        self.wake.set()
+
+    async def _lease_screen(self, task_id: int) -> None:
+        if self.screen_owner == task_id:
+            return
+        if self.screen_lock.locked():
+            self._emit(task_id, "note", {"text": f"Waiting for the screen — task #{self.screen_owner} is using it."})
+        await self.screen_lock.acquire()
+        self.screen_owner = task_id
+        self.bus.publish({"type": "screen_owner", "task_id": task_id})
+
+    def _release_screen(self, task_id: int) -> None:
+        if self.screen_owner == task_id and self.screen_lock and self.screen_lock.locked():
+            self.screen_owner = None
+            self.screen_lock.release()
+            self.bus.publish({"type": "screen_owner", "task_id": None})
 
     # -- public API (server, Telegram) ----------------------------------------------
-    def submit(self, prompt: str, *, source: str = "app", run_at: float | None = None, repeat: str | None = None) -> int:
+    def submit(self, prompt: str, *, source: str = "app", run_at: float | None = None, repeat: str | None = None,
+               origin: str | None = None, title: str | None = None) -> int:
+        """Queue a worker task. `origin` is the channel to report back to (e.g. "web", "telegram:42")."""
         if repeat and repeat not in REPEATS:
             raise ValueError(f"repeat must be one of {', '.join(REPEATS)}")
         if repeat and not run_at:
             run_at = time.time()
-        tid = self.store.create_task(prompt, source=source, run_at=run_at, repeat=repeat,
+        tid = self.store.create_task(prompt, source=source, run_at=run_at, repeat=repeat, origin=origin, title=title,
                                      provider=self.settings.provider, model=self.settings.model)
         self._emit(tid, "created", {"prompt": prompt, "source": source, "run_at": run_at, "repeat": repeat})
+        self.bus.publish({"type": "task", "task": self.store.task(tid)})
         self.wake.set()
         return tid
 
@@ -192,8 +227,8 @@ class Agent:
         task = self.store.task(task_id)
         if task is None:
             raise KeyError(task_id)
-        if self.current == task_id and self.runner:
-            self.runner.cancel()
+        if task_id in self.running:
+            self.running[task_id].cancel()
         elif task["status"] in {"queued", "scheduled", "interrupted", "blocked"}:
             self.store.update_task(task_id, status="cancelled", ended_at=time.time())
             self._emit(task_id, "status", {"status": "cancelled"})
@@ -212,8 +247,9 @@ class Agent:
         self._emit(task_id, "status", {"status": "running"})
 
     def screen_busy(self) -> bool:
-        """True while a task may be driving the screen (and is not paused)."""
-        return self.current is not None and not (self.current in self.paused and not self.paused[self.current].is_set())
+        """True while a worker holds the screen and is not paused."""
+        o = self.screen_owner
+        return o is not None and not (o in self.paused and not self.paused[o].is_set())
 
     def decide(self, approval_id: int, approve: bool, answer: str | None, via: str) -> bool:
         appr = self.store.approval(approval_id)
@@ -264,8 +300,8 @@ class Agent:
                  **({"toolset_name": b["toolset_name"]} if b.get("toolset_name") else {})} for b in pending]})
         return history
 
-    async def _gate(self) -> None:
-        ev = self.paused.get(self.current or -1)
+    async def _gate(self, task_id: int) -> None:
+        ev = self.paused.get(task_id)
         if ev is not None and not ev.is_set():
             await ev.wait()
 
@@ -321,8 +357,9 @@ class Agent:
                              + (f" Note: {answer}" if answer else "") + " Do not try to achieve it another way.")
 
         if toolset == COMPUTER:
-            if not self.tools.host or name not in SCREEN_MEMBERS:
+            if name not in SCREEN_MEMBERS:
                 raise ToolError(f"unknown computer action {name}")
+            await self._lease_screen(task["id"])
             return await self.tools.computer(name, inp)
         return await self.tools.run(name, inp)
 
@@ -342,7 +379,7 @@ class Agent:
         final_text = ""
         try:
             while True:
-                await self._gate()
+                await self._gate(task_id)
                 if steps >= self.settings.max_steps:
                     self._status(task_id, "blocked", error=f"Stopped after {steps} steps (RELAY_MAX_STEPS). "
                                  "Send a follow-up to let it continue.")
@@ -379,7 +416,7 @@ class Agent:
                 results: list[dict] = []
                 batch_failed = False
                 for b in calls:
-                    await self._gate()
+                    await self._gate(task_id)
                     echo = {"toolset_name": b["toolset_name"]} if b.get("toolset_name") else {}
                     if batch_failed and b.get("toolset_name") == COMPUTER:
                         results.append({"type": "tool_result", "tool_use_id": b["id"], "content": HALT, "is_error": True, **echo})
@@ -425,6 +462,7 @@ class Agent:
         finally:
             self.paused.pop(task_id, None)
             self.inbox.pop(task_id, None)
+            self._release_screen(task_id)
             await self._after(task_id)
 
     async def _after(self, task_id: int) -> None:
@@ -435,11 +473,12 @@ class Agent:
                                             provider=task["provider"], model=task["model"])
             self._emit(new_id, "created", {"prompt": task["prompt"], "run_at": nxt, "repeat": task["repeat"],
                                            "source": task["source"]})
-        for n in self.notifiers:
+        task = self.store.task(task_id)
+        for listener in self.listeners:
             try:
-                await n.finished(task)
+                listener(task)
             except Exception:
-                log.exception("notifier failed")
+                log.exception("listener failed")
 
 
 def shot_path(settings: Settings, task_id: int, name: str) -> Path | None:

@@ -61,6 +61,12 @@ class Settings:
     deepseek_api_key: str = field(default_factory=lambda: os.environ.get("DEEPSEEK_API_KEY", ""))
     openai_api_key: str = field(default_factory=lambda: os.environ.get("OPENAI_API_KEY", ""))
 
+    # Layers: a light router model talks to you and dispatches; heavy workers run tasks.
+    router_model: str = field(default_factory=lambda: os.environ.get("RELAY_ROUTER_MODEL", ""))
+    router_batch_ms: int = field(default_factory=lambda: _int("RELAY_ROUTER_BATCH_MS", 1200))
+    router_max_wait_ms: int = field(default_factory=lambda: _int("RELAY_ROUTER_MAX_WAIT_MS", 4000))
+    max_workers: int = field(default_factory=lambda: _int("RELAY_WORKERS", 3))
+
     # Guard rails.
     policy: str = field(default_factory=lambda: os.environ.get("RELAY_POLICY", "balanced"))  # careful|balanced|autonomous
     max_steps: int = field(default_factory=lambda: _int("RELAY_MAX_STEPS", 80))
@@ -83,6 +89,9 @@ class Settings:
             self.home.chmod(0o700)
         except OSError:
             pass
+        if not self.router_model:
+            self.router_model = {"anthropic": "claude-haiku-5-5", "deepseek": "deepseek-chat",
+                                 "openai": "gpt-4.1-mini"}.get(self.provider, "claude-haiku-5-5")
         if not self.model:
             self.model = {"anthropic": "claude-opus-5-5", "deepseek": "deepseek-chat", "openai": "gpt-4.1"}.get(
                 self.provider, "claude-opus-5-5"

@@ -9,7 +9,9 @@ const $app = document.getElementById("app");
 const TOKEN_KEY = "relay_token";
 const S = {
   token: localStorage.getItem(TOKEN_KEY),
-  state: null, view: "home", taskId: null, task: null, events: [],
+  state: null, view: "chat", taskId: null, task: null, events: [],
+  chat: [], routerBusy: false, chatDraft: "", triggers: null,
+  trig: { kind: "folder", name: "", instruction: "", path: "~/Downloads", pattern: "*", query: "", minutes: 15, battery: "", disk: "" },
   ws: null, connected: false, retry: 0,
   frame: null, frameErr: "", mode: "click", mods: new Set(), lastTap: null, takeover: false,
   draft: "", followup: "", sched: false, runAt: "", repeat: "",
@@ -60,7 +62,7 @@ function connect() {
 }
 
 function onMessage(m) {
-  if (m.type === "hello") { S.state = m.state; render(); return; }
+  if (m.type === "hello") { S.state = m.state; S.routerBusy = !!m.state.router?.busy; render(); loadChat(); return; }
   if (!S.state) return;
   if (m.type === "frame") {
     S.frame = m; S.frameErr = "";
@@ -70,11 +72,26 @@ function onMessage(m) {
     return;
   }
   if (m.type === "frame_error") { S.frameErr = m.error; render(); return; }
+  if (m.type === "chat") {
+    if (!S.chat.some((x) => x.id === m.message.id)) S.chat.push(m.message);
+    if (m.message.role === "relay") S.routerBusy = false;
+    const atBottom = innerHeight + scrollY > document.body.scrollHeight - 200;
+    render();
+    if (S.view === "chat" && atBottom) scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+    return;
+  }
+  if (m.type === "router") { S.routerBusy = m.busy; render(); return; }
+  if (m.type === "screen_owner") {
+    S.state.screen_owner = m.task_id; S.state.screen_busy = m.task_id != null; render(); return;
+  }
   if (m.type === "task") {
     const i = S.state.tasks.findIndex((t) => t.id === m.task.id);
     if (i >= 0) S.state.tasks[i] = m.task; else S.state.tasks.unshift(m.task);
-    S.state.current = ["running", "waiting", "paused"].includes(m.task.status) ? m.task.id :
-      (S.state.current === m.task.id ? null : S.state.current);
+    const live = ["running", "waiting", "paused"].includes(m.task.status);
+    const run = new Set(S.state.running || []);
+    live ? run.add(m.task.id) : run.delete(m.task.id);
+    S.state.running = [...run].sort((a, b) => a - b);
+    if (!live && S.state.screen_owner === m.task.id) { S.state.screen_owner = null; S.state.screen_busy = false; }
     if (S.task && S.task.id === m.task.id) S.task = m.task;
     // spend and the schedule change when a task ends; re-read them
     if (["done", "failed", "cancelled", "blocked"].includes(m.task.status)) refreshState();
@@ -82,6 +99,7 @@ function onMessage(m) {
   if (m.type === "approval") {
     if (!S.state.approvals.some((a) => a.id === m.approval.id)) S.state.approvals.push(m.approval);
     if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
+    if (S.view === "chat") { render(); scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }); return; }
   }
   if (m.type === "event") {
     const ev = m.event;
@@ -96,6 +114,10 @@ function onMessage(m) {
     }
   }
   render();
+}
+
+async function loadChat() {
+  try { S.chat = await api("/api/chat"); render(); if (S.view === "chat") scrollTo(0, document.body.scrollHeight); } catch {}
 }
 
 async function refreshState() {
@@ -128,28 +150,30 @@ function render() {
 
 function shell() {
   const pending = S.state.approvals.length;
-  const body = S.view === "task" ? viewTask() : S.view === "screen" ? viewScreen() : S.view === "settings" ? viewSettings() : viewHome();
-  const composer = S.view === "home" ? composerHome() : S.view === "task" ? composerTask() : "";
+  const body = S.view === "task" ? viewTask() : S.view === "screen" ? viewScreen() : S.view === "settings" ? viewSettings()
+    : S.view === "tasks" ? viewHome() : viewChat();
+  const composer = S.view === "chat" ? composerChat() : S.view === "tasks" ? composerHome() : S.view === "task" ? composerTask() : "";
   return `
     <main class="page ${composer ? "" : "no-composer"}">${body}</main>
     ${composer}
     <nav class="tabs">
-      ${tab("home", "◉", "Tasks", pending)}${tab("screen", "▢", "Screen")}${tab("settings", "⚙", "Settings")}
+      ${tab("chat", "💬", "Chat", pending)}${tab("tasks", "◉", "Tasks", (S.state.running || []).length)}${tab("screen", "▢", "Screen")}${tab("settings", "⚙", "Settings")}
     </nav>
     ${S.toast ? `<div class="toast" role="status">${esc(S.toast)}</div>` : ""}
     ${S.lightbox ? `<div class="lightbox" data-act="close-lightbox"><img src="${esc(S.lightbox)}" alt="screenshot"></div>` : ""}`;
 }
 
 function tab(id, ic, label, badge = 0) {
-  const on = S.view === id || (id === "home" && S.view === "task");
+  const on = S.view === id || (id === "tasks" && S.view === "task");
   return `<button class="${on ? "active" : ""}" data-act="tab" data-id="${id}">
     ${badge ? `<span class="badge">${badge}</span>` : ""}<span class="ic">${ic}</span>${label}</button>`;
 }
 
 function header(title) {
-  const cur = S.state.tasks.find((t) => t.id === S.state.current);
-  const dot = !S.connected ? "" : cur ? "busy" : "on";
-  const label = !S.connected ? "offline" : cur ? (cur.status === "waiting" ? "needs you" : cur.status === "paused" ? "paused" : "working") : "idle";
+  const run = (S.state.running || []).map((id) => S.state.tasks.find((t) => t.id === id)).filter(Boolean);
+  const dot = !S.connected ? "" : run.length ? "busy" : "on";
+  const label = !S.connected ? "offline" : S.state.approvals.length ? "needs you"
+    : run.length ? `${run.length} working` : "idle";
   return `<header class="top">
     <div class="brand"><img src="/static/icon.svg" alt="">${esc(title)}</div>
     <span class="conn"><span class="dot ${dot}"></span>${label}</span></header>`;
@@ -182,26 +206,28 @@ function taskRow(t) {
     <span class="pill ${esc(t.status)}">${esc(t.status)}</span></button>`;
 }
 
+function runningCard(cur) {
+  return `<div class="card" data-act="open" data-id="${cur.id}" style="cursor:pointer">
+    <div class="row spread"><span class="label">${S.state.screen_owner === cur.id ? "Now · on screen" : "Now"}</span>
+      <span class="pill ${esc(cur.status)}">${esc(cur.status)}</span></div>
+    <h2 style="margin-top:6px">${esc(cur.title)}</h2>
+    <div class="muted small">#${cur.id} · ${cur.steps} steps · ${money(cur.cost_usd)}</div>
+    <div class="btn-row">
+      ${cur.status === "paused" ? `<button class="btn small" data-act="resume" data-id="${cur.id}">Resume</button>` :
+        `<button class="btn small" data-act="pause" data-id="${cur.id}">Pause</button>`}
+      <button class="btn small bad" data-act="cancel" data-id="${cur.id}">Stop</button></div></div>`;
+}
+
 function viewHome() {
-  const st = S.state, cur = st.tasks.find((t) => t.id === st.current);
-  const tasks = st.tasks.filter((t) => t.id !== st.current);
+  const st = S.state, run = new Set(st.running || []);
+  const live = st.tasks.filter((t) => run.has(t.id));
+  const tasks = st.tasks.filter((t) => !run.has(t.id));
   const scheduled = tasks.filter((t) => t.status === "scheduled");
   const recent = tasks.filter((t) => t.status !== "scheduled").slice(0, 25);
-  return `${header("Relay")}
-    ${st.approvals.map(approvalCard).join("")}
-    ${cur ? `<div class="card" data-act="open" data-id="${cur.id}" style="cursor:pointer">
-        <div class="row spread"><span class="label">Now</span><span class="pill ${esc(cur.status)}">${esc(cur.status)}</span></div>
-        <h2 style="margin-top:6px">${esc(cur.title)}</h2>
-        <div class="muted small">${cur.steps} steps · ${money(cur.cost_usd)}</div>
-        <div class="btn-row">
-          ${cur.status === "paused" ? `<button class="btn small" data-act="resume" data-id="${cur.id}">Resume</button>` :
-            `<button class="btn small" data-act="pause" data-id="${cur.id}">Pause</button>`}
-          <button class="btn small bad" data-act="cancel" data-id="${cur.id}">Stop</button></div></div>` : ""}
-    ${!st.tasks.length ? `<div class="card"><h2>What should your Mac do?</h2>
-        <p class="muted small" style="margin:4px 0 12px">Relay works in the background on your Mac and asks you before anything that sends, deletes or changes things.</p>
-        <div class="chips">${["What's on my calendar today?", "Summarize my unread email", "Tidy up my Downloads folder by type",
-          "Open Safari and check the weather", "Remind me to call mom at 6pm"].map((c) =>
-          `<button class="chip" data-act="suggest" data-text="${esc(c)}">${esc(c)}</button>`).join("")}</div></div>` : ""}
+  return `${header("Tasks")}
+    <p class="muted small" style="margin:-8px 4px 12px">${st.workers} workers in parallel · ${st.screen_owner ? `screen: task #${st.screen_owner}` : "screen free"}</p>
+    ${live.map(runningCard).join("")}
+    ${!st.tasks.length ? `<div class="card"><h2>No tasks yet</h2><p class="muted small">Ask in Chat, or start a task directly below.</p></div>` : ""}
     ${scheduled.length ? `<div class="label section-title">Scheduled</div><div class="card list">${scheduled.map(taskRow).join("")}</div>` : ""}
     ${recent.length ? `<div class="label section-title">Recent</div><div class="card list">${recent.map(taskRow).join("")}</div>` : ""}
     <p class="muted small" style="text-align:center">${money(st.spend_today)} spent today of ${money(st.settings.daily_cap_usd)} cap</p>`;
@@ -216,18 +242,48 @@ function composerHome() {
       </select></div>` : ""}
     <form data-form="new-task">
       <button type="button" class="icon-btn ${S.sched ? "on" : ""}" data-act="toggle-sched" aria-label="Schedule">⏰</button>
-      <textarea id="draft" rows="1" placeholder="Ask your Mac to…" enterkeyhint="send">${esc(S.draft)}</textarea>
+      <textarea id="draft" rows="1" placeholder="Start a task directly…" enterkeyhint="send">${esc(S.draft)}</textarea>
       <button class="send" aria-label="Send">↑</button></form></div></div>`;
 }
 
 const ICON = { read: "👁", act: "🖱", change: "✎", send: "✉", danger: "⚠" };
 
+const SUGGEST = ["What's on my calendar today?", "Summarize my unread email", "Tidy up my Downloads folder by type",
+  "Whenever a PDF lands in Downloads, file receipts into Documents/Receipts", "Every weekday at 8:30, brief me on my day"];
+
+function taskChip(id) {
+  const t = S.state.tasks.find((x) => x.id === id);
+  return `<button class="taskchip" data-act="open" data-id="${id}"><span class="grow ellipsis">#${id} ${esc(t ? t.title : "task")}</span>
+    ${t ? `<span class="pill ${esc(t.status)}">${esc(t.status)}</span>` : ""}</button>`;
+}
+
+function viewChat() {
+  const msgs = S.chat.map((m) => {
+    if (m.role === "user") return `<div class="bubble user">${esc(m.text)}</div>`;
+    if (m.role === "task") return taskChip(m.task_id);
+    return `<div class="bubble agent">${esc(m.text)}${m.task_id ? taskChip(m.task_id) : ""}</div>`;
+  }).join("");
+  return `${header("Relay")}
+    ${!S.chat.length ? `<div class="card"><h2>What should your Mac do?</h2>
+        <p class="muted small" style="margin:4px 0 12px">Talk to Relay here. It hands real work to workers on your Mac, runs several at once,
+        and asks you before anything that sends, deletes or changes things.</p>
+        <div class="chips">${SUGGEST.map((c) => `<button class="chip" data-act="suggest-chat" data-text="${esc(c)}">${esc(c)}</button>`).join("")}</div></div>` : ""}
+    <div class="timeline">${msgs}${S.routerBusy ? `<div class="bubble agent typing"><span></span><span></span><span></span></div>` : ""}</div>
+    ${S.state.approvals.length ? `<div style="margin-top:14px">${S.state.approvals.map(approvalCard).join("")}</div>` : ""}`;
+}
+
+function composerChat() {
+  return `<div class="composer"><div class="inner"><form data-form="chat">
+    <textarea id="chatdraft" rows="1" placeholder="Message Relay…" enterkeyhint="send">${esc(S.chatDraft)}</textarea>
+    <button class="send" aria-label="Send">↑</button></form></div></div>`;
+}
+
 function viewTask() {
   const t = S.task || S.state.tasks.find((x) => x.id === S.taskId);
-  if (!t) return `<button class="back" data-act="tab" data-id="home">‹ Tasks</button><p class="muted">Loading…</p>`;
+  if (!t) return `<button class="back" data-act="tab" data-id="tasks">‹ Tasks</button><p class="muted">Loading…</p>`;
   const items = S.events.map((ev) => eventItem(ev, t)).join("");
   const live = ["running", "waiting", "paused"].includes(t.status);
-  return `<div class="row spread"><button class="back" data-act="tab" data-id="home">‹ Tasks</button>
+  return `<div class="row spread"><button class="back" data-act="tab" data-id="tasks">‹ Tasks</button>
       <span class="pill ${esc(t.status)}">${esc(t.status)}</span></div>
     <h2 style="margin:4px 0 2px;font-size:20px">${esc(t.title)}</h2>
     <div class="muted small" style="margin-bottom:12px">#${t.id} · ${t.steps} steps · ${money(t.cost_usd)} · ${esc(t.model || "")}</div>
@@ -277,7 +333,7 @@ function composerTask() {
 
 function viewScreen() {
   const busy = S.state.screen_busy;
-  const cur = S.state.tasks.find((t) => t.id === S.state.current);
+  const cur = S.state.tasks.find((t) => t.id === (S.state.screen_owner ?? S.state.current));
   return `${header("Screen")}
     ${busy ? `<div class="banner">🤖 <div class="grow">Relay is using the screen${cur ? ` for “${esc(cur.title)}”` : ""}.</div>
       <button class="btn small primary" data-act="takeover">Take over</button></div>` :
@@ -308,6 +364,44 @@ function viewScreen() {
     <p class="muted small">Tap the screen to act at that spot. Your manual actions are logged.</p>`;
 }
 
+const TRIG = {
+  folder: ["📁", "New files in a folder"], mail: ["✉️", "New unread email"], calendar: ["📅", "Event about to start"],
+  system: ["🖥", "Disk or battery low"], webhook: ["🔗", "Webhook (Shortcuts, IFTTT…)"],
+};
+
+function viewAutomations() {
+  const f = S.trig;
+  const fields = {
+    folder: `<input class="field" id="trig-path" placeholder="Folder, e.g. ~/Downloads" value="${esc(f.path)}">
+             <input class="field" id="trig-pattern" placeholder="Files matching, e.g. *.pdf" value="${esc(f.pattern)}">`,
+    mail: `<input class="field" id="trig-query" placeholder="Only mail matching (optional)" value="${esc(f.query)}">`,
+    calendar: `<input class="field" id="trig-minutes" type="number" min="1" placeholder="Minutes before" value="${esc(f.minutes)}">`,
+    system: `<input class="field" id="trig-disk" type="number" placeholder="Disk free below (GB)" value="${esc(f.disk)}">
+             <input class="field" id="trig-battery" type="number" placeholder="Battery below (%)" value="${esc(f.battery)}">`,
+    webhook: `<p class="muted small" style="margin:0">You get a URL and secret to call from Shortcuts, IFTTT or Home Assistant.</p>`,
+  }[f.kind];
+  return `<div class="card"><div class="label">Automations</div>
+    <p class="muted small" style="margin:6px 0 4px">When something happens on your Mac, Relay's router decides what to do with your instruction.
+      You can also just say it in Chat: “whenever…”.</p>
+    ${(S.triggers || []).map((t) => `<div class="trig">
+      <div class="row spread"><b>${TRIG[t.kind]?.[0] || "⚡"} ${esc(t.name)}</b>
+        <span class="row" style="gap:6px"><button class="btn small" data-act="trig-toggle" data-id="${t.id}">${t.enabled ? "On" : "Off"}</button>
+        <button class="btn small bad" data-act="trig-delete" data-id="${t.id}">Delete</button></span></div>
+      <div class="small">${esc(t.instruction)}</div>
+      <div class="muted small">${esc(TRIG[t.kind]?.[1] || t.kind)}${t.config?.path ? " · " + esc(t.config.path) : ""} · fired ${t.fire_count}×${t.last_fired ? ", " + esc(ago(t.last_fired)) : ""}
+        ${t.last_error ? `<br><span style="color:var(--bad)">${esc(t.last_error)}</span>` : ""}</div>
+      ${t.kind === "webhook" ? `<pre class="hook">POST ${esc(location.origin + t.hook_path)}\nX-Relay-Secret: ${esc(t.secret)}</pre>` : ""}
+    </div>`).join("") || `<p class="muted small">No automations yet.</p>`}
+    <form data-form="trigger" class="trigform">
+      <select class="field" id="trig-kind">${Object.entries(TRIG).map(([k, [ic, l]]) =>
+        `<option value="${k}" ${f.kind === k ? "selected" : ""}>${ic} ${l}</option>`).join("")}</select>
+      <input class="field" id="trig-name" placeholder="Name" value="${esc(f.name)}">
+      ${fields}
+      <textarea class="field" id="trig-instruction" rows="2" placeholder="What should Relay do each time?">${esc(f.instruction)}</textarea>
+      <button class="btn primary">Add automation</button>
+    </form></div>`;
+}
+
 const POLICY_TEXT = {
   careful: ["Careful", "Asks before every action except looking — every click and keystroke."],
   balanced: ["Balanced", "Acts on screen freely; asks before anything that changes data, sends, or is risky."],
@@ -320,8 +414,9 @@ function viewSettings() {
     <div class="card"><div class="label">When Relay asks first</div>
       ${Object.entries(POLICY_TEXT).map(([k, [n, d]]) => `<button class="policy-opt ${st.policy === k ? "on" : ""}" style="width:100%;text-align:left" data-act="policy" data-id="${k}">
         <b>${n}</b><span class="muted small">${d}</span></button>`).join("")}</div>
-    <div class="card"><div class="label">Model</div>
-      <div class="row spread" style="margin-top:8px"><span>${esc(st.provider)} · ${esc(st.model)}</span>
+    <div class="card"><div class="label">Models</div>
+      <p class="small" style="margin:8px 0 0">Router (chat, light): <b>${esc(S.state.router?.model || "—")}</b></p>
+      <div class="row spread" style="margin-top:8px"><span class="small">Workers (tasks, ×${S.state.workers}): <b>${esc(st.model)}</b></span>
         <select class="field" id="effort" style="max-width:130px" data-change="effort">
           ${["low", "medium", "high", "xhigh"].map((e) => `<option ${st.effort === e ? "selected" : ""}>${e}</option>`).join("")}</select></div>
       ${st.can_see_screen ? "" : `<p class="muted small">This model can't see the screen, so Relay uses Mac tools only (no clicking).</p>`}
@@ -335,6 +430,7 @@ function viewSettings() {
     <div class="card"><div class="label">What Relay remembers</div>
       ${(S.memories || []).length ? S.memories.map((m) => `<div class="row spread" style="margin-top:10px"><div class="grow small">${esc(m.text)}</div>
         <button class="btn small" data-act="forget" data-id="${m.id}">Forget</button></div>`).join("") : `<p class="muted small">Nothing yet. Relay saves preferences you mention.</p>`}</div>
+    ${viewAutomations()}
     <div class="card"><div class="label">Notifications</div>
       <p class="small">Telegram: ${st.telegram ? "on" : "off"} · ntfy: ${st.ntfy ? "on" : "off"}</p>
       <p class="muted small">Approvals also reach you there when this app is closed. Configure on the Mac (see README).</p></div>
@@ -361,6 +457,7 @@ async function go(view, id) {
   S.view = view;
   if (view === "screen") screenOn(true);
   if (view === "settings") loadSettings();
+  if (view === "chat") { render(); scrollTo(0, document.body.scrollHeight); return; }
   if (view === "task") {
     S.taskId = id; S.events = []; S.task = S.state.tasks.find((t) => t.id === id) || null; S.followup = "";
     render(); scrollTo(0, 0);
@@ -372,7 +469,10 @@ async function go(view, id) {
 }
 
 async function loadSettings() {
-  try { [S.devices, S.memories] = await Promise.all([api("/api/devices"), api("/api/memories")]); render(); } catch (e) { toast(e.message); }
+  try {
+    [S.devices, S.memories, S.triggers] = await Promise.all([api("/api/devices"), api("/api/memories"), api("/api/triggers")]);
+    render();
+  } catch (e) { toast(e.message); }
 }
 
 async function control(body) {
@@ -408,6 +508,12 @@ $app.addEventListener("click", async (e) => {
       case "tab": return go(id);
       case "open": return go("task", n);
       case "suggest": S.draft = el.dataset.text; render(); document.getElementById("draft")?.focus(); return;
+      case "suggest-chat": S.chatDraft = el.dataset.text; render(); document.getElementById("chatdraft")?.focus(); return;
+      case "trig-toggle": {
+        const t = S.triggers.find((x) => x.id === n);
+        await api(`/api/triggers/${n}`, { method: "PATCH", body: { enabled: !t.enabled } }); return loadSettings();
+      }
+      case "trig-delete": if (confirm("Delete this automation?")) { await api(`/api/triggers/${n}`, { method: "DELETE" }); loadSettings(); } return;
       case "toggle-sched": S.sched = !S.sched; render(); return;
       case "approve": case "deny":
         el.disabled = true;
@@ -426,7 +532,7 @@ $app.addEventListener("click", async (e) => {
         return toast(act === "cancel" ? "Stopping" : act === "pause" ? "Paused" : "Resumed");
       case "takeover":
         S.takeover = true;
-        if (S.state.current) await api(`/api/tasks/${S.state.current}/pause`, { method: "POST" });
+        if (S.state.screen_owner) await api(`/api/tasks/${S.state.screen_owner}/pause`, { method: "POST" });
         S.state.screen_busy = false; toast("You have control"); return;
       case "mode": S.mode = id; render(); return;
       case "mod": S.mods.has(id) ? S.mods.delete(id) : S.mods.add(id); render(); return;
@@ -453,6 +559,7 @@ $app.addEventListener("change", async (e) => {
     catch (err) { toast(err.message); }
   }
   if (e.target.id === "run-at") S.runAt = e.target.value;
+  if (e.target.id === "trig-kind") { S.trig.kind = e.target.value; render(); }
   if (e.target.id === "repeat") S.repeat = e.target.value;
 });
 
@@ -460,6 +567,10 @@ $app.addEventListener("input", (e) => {
   const t = e.target;
   if (t.id === "draft") S.draft = t.value;
   if (t.id === "followup") S.followup = t.value;
+  if (t.id === "chatdraft") S.chatDraft = t.value;
+  const tf = { "trig-name": "name", "trig-instruction": "instruction", "trig-path": "path", "trig-pattern": "pattern",
+    "trig-query": "query", "trig-minutes": "minutes", "trig-battery": "battery", "trig-disk": "disk" }[t.id];
+  if (tf) S.trig[tf] = t.value;
   if (t.tagName === "TEXTAREA" && t.closest(".composer")) { t.style.height = "auto"; t.style.height = Math.min(140, t.scrollHeight) + "px"; }
 });
 
@@ -483,6 +594,26 @@ $app.addEventListener("submit", async (e) => {
       S.token = data.token; S.toast = "";
       history.replaceState(null, "", "/");
       render(); connect(); refreshState();
+    } else if (form === "chat") {
+      const text = S.chatDraft.trim();
+      if (!text) return;
+      S.chatDraft = ""; S.routerBusy = true; render();
+      const r = await api("/api/chat", { method: "POST", body: { text } });
+      if (r && r.id && !S.chat.some((x) => x.id === r.id)) S.chat.push(r);
+      render(); scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+    } else if (form === "trigger") {
+      const f = S.trig, config = {};
+      if (f.kind === "folder") Object.assign(config, { path: f.path, pattern: f.pattern || "*" });
+      if (f.kind === "mail" && f.query) config.query = f.query;
+      if (f.kind === "calendar") config.minutes_before = Number(f.minutes) || 15;
+      if (f.kind === "system") {
+        if (f.disk) config.disk_free_below_gb = Number(f.disk);
+        if (f.battery) config.battery_below = Number(f.battery);
+      }
+      if (!f.instruction.trim()) return toast("Say what Relay should do each time");
+      await api("/api/triggers", { method: "POST", body: { name: f.name || TRIG[f.kind][1], kind: f.kind, config, instruction: f.instruction } });
+      S.trig = { ...S.trig, name: "", instruction: "" };
+      toast("Automation added"); loadSettings();
     } else if (form === "new-task") {
       const prompt = S.draft.trim();
       if (!prompt) return;

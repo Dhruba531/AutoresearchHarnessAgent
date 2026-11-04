@@ -37,10 +37,20 @@ CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY, text TEXT NOT NULL,
 CREATE TABLE IF NOT EXISTS spend (id INTEGER PRIMARY KEY, task_id INTEGER, usd REAL NOT NULL, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS telegram_chats (chat_id INTEGER PRIMARY KEY, name TEXT, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS chat (
+  id INTEGER PRIMARY KEY, channel TEXT NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL,
+  task_id INTEGER, sender TEXT, created_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS chat_channel ON chat(channel, id);
+CREATE TABLE IF NOT EXISTS triggers (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, config TEXT NOT NULL, instruction TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1, secret TEXT, state TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL,
+  last_fired REAL, fire_count INTEGER NOT NULL DEFAULT 0, last_error TEXT);
 """
 
+MIGRATIONS = ["ALTER TABLE tasks ADD COLUMN origin TEXT"]
+
 TASK_FIELDS = ("id", "title", "prompt", "status", "source", "created_at", "updated_at", "started_at", "ended_at",
-               "run_at", "repeat", "result", "error", "cost_usd", "provider", "model", "steps")
+               "run_at", "repeat", "result", "error", "cost_usd", "provider", "model", "steps", "origin")
 
 
 class Store:
@@ -52,6 +62,11 @@ class Store:
         with self._lock:
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.executescript(SCHEMA)
+            for sql in MIGRATIONS:  # additive columns for databases made by older versions
+                try:
+                    self._db.execute(sql)
+                except sqlite3.OperationalError:
+                    pass
 
     # -- primitives ---------------------------------------------------------
     def x(self, sql: str, args: tuple = ()) -> sqlite3.Cursor:
@@ -78,14 +93,15 @@ class Store:
 
     # -- tasks --------------------------------------------------------------
     def create_task(self, prompt: str, *, source: str = "app", run_at: float | None = None,
-                    repeat: str | None = None, provider: str = "", model: str = "") -> int:
+                    repeat: str | None = None, provider: str = "", model: str = "", origin: str | None = None,
+                    title: str | None = None) -> int:
         now = time.time()
-        title = prompt.strip().splitlines()[0][:80] if prompt.strip() else "Task"
+        title = (title or (prompt.strip().splitlines()[0] if prompt.strip() else "Task"))[:80]
         status = "scheduled" if run_at and run_at > now + 1 else "queued"
         cur = self.x(
-            "INSERT INTO tasks(title,prompt,status,source,created_at,updated_at,run_at,repeat,provider,model)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (title, prompt, status, source, now, now, run_at, repeat, provider, model),
+            "INSERT INTO tasks(title,prompt,status,source,created_at,updated_at,run_at,repeat,provider,model,origin)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (title, prompt, status, source, now, now, run_at, repeat, provider, model, origin),
         )
         return int(cur.lastrowid)
 
@@ -169,3 +185,31 @@ class Store:
 
     def forget(self, memory_id: int) -> None:
         self.x("DELETE FROM memories WHERE id=?", (memory_id,))
+
+    # -- router chat log ------------------------------------------------------
+    def add_chat(self, channel: str, role: str, text: str, task_id: int | None = None, sender: str | None = None) -> dict:
+        now = time.time()
+        cur = self.x("INSERT INTO chat(channel,role,text,task_id,sender,created_at) VALUES(?,?,?,?,?,?)",
+                     (channel, role, text, task_id, sender, now))
+        return {"id": int(cur.lastrowid), "channel": channel, "role": role, "text": text, "task_id": task_id,
+                "sender": sender, "created_at": now}
+
+    def chat(self, channel: str | None = None, limit: int = 60) -> list[dict]:
+        if channel:
+            rows = self.all("SELECT * FROM chat WHERE channel=? ORDER BY id DESC LIMIT ?", (channel, limit))
+        else:
+            rows = self.all("SELECT * FROM chat ORDER BY id DESC LIMIT ?", (limit,))
+        return list(reversed(rows))
+
+    # -- triggers -----------------------------------------------------------------
+    def triggers(self, enabled_only: bool = False) -> list[dict]:
+        rows = self.all("SELECT * FROM triggers" + (" WHERE enabled=1" if enabled_only else "") + " ORDER BY id")
+        for r in rows:
+            r["config"], r["state"] = json.loads(r["config"]), json.loads(r["state"])
+        return rows
+
+    def trigger(self, trigger_id: int) -> dict | None:
+        r = self.one("SELECT * FROM triggers WHERE id=?", (trigger_id,))
+        if r:
+            r["config"], r["state"] = json.loads(r["config"]), json.loads(r["state"])
+        return r

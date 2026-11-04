@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -64,6 +65,21 @@ class ControlIn(BaseModel):
     force: bool = False
 
 
+class ChatIn(BaseModel):
+    text: str = Field(min_length=1, max_length=20_000)
+
+
+class TriggerIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    kind: str
+    config: dict = Field(default_factory=dict)
+    instruction: str = Field(min_length=3, max_length=2000)
+
+
+class TriggerPatch(BaseModel):
+    enabled: bool
+
+
 class SettingsIn(BaseModel):
     policy: str | None = None
     effort: str | None = None
@@ -74,8 +90,10 @@ def token_of(request: Request) -> str | None:
     return h[7:].strip() if h.lower().startswith("bearer ") else request.query_params.get("token")
 
 
-def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=None) -> FastAPI:
-    limiter = RateLimiter(limit=8, window_s=60)
+def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=None, *, router=None,
+               triggers=None) -> FastAPI:
+    limiter = RateLimiter(limit=8, window_s=60)  # pairing
+    hook_limiter = RateLimiter(limit=60, window_s=60)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -85,7 +103,12 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
         if saved.get("effort"):
             settings.effort = saved["effort"]
         agent.start()
-        tasks = [asyncio.create_task(c) for c in (extra_startup() if extra_startup else [])]
+        jobs = list(extra_startup() if extra_startup else [])
+        if router is not None:
+            jobs.append(router.run())
+        if triggers is not None:
+            jobs.append(triggers.run())
+        tasks = [asyncio.create_task(c) for c in jobs]
         yield
         for t in tasks:
             t.cancel()
@@ -105,7 +128,12 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
             "approvals": store.pending_approvals(),
             "host": agent.host.info(),
             "current": agent.current,
+            "running": sorted(agent.running),
+            "screen_owner": agent.screen_owner,
             "screen_busy": agent.screen_busy(),
+            "router": {"enabled": router is not None, "busy": bool(router and router.busy),
+                       "model": settings.router_model},
+            "workers": settings.max_workers,
             "settings": {"policy": settings.policy, "provider": settings.provider, "model": settings.model,
                          "effort": settings.effort, "can_see_screen": settings.can_see_screen,
                          "daily_cap_usd": settings.daily_cap_usd, "telegram": bool(settings.telegram_token),
@@ -163,8 +191,8 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
         if action == "cancel":
             agent.cancel(task_id)
         elif action == "pause":
-            if agent.current != task_id:
-                raise HTTPException(409, "Only the running task can be paused.")
+            if task_id not in agent.running:
+                raise HTTPException(409, "Only a running task can be paused.")
             agent.pause(task_id)
         elif action == "resume":
             agent.resume(task_id)
@@ -197,7 +225,7 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
         if agent.screen_busy():
             if not body.force:
                 raise HTTPException(409, "A task is using the screen. Take over (pauses it) to control manually.")
-            agent.pause(agent.current)
+            agent.pause(agent.screen_owner)
         h = agent.host
         a = body.action
         if a in {"click", "double_click", "right_click"}:
@@ -220,6 +248,66 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
             raise HTTPException(400, f"Unknown action {a}.")
         store.add_event(0, "manual", {"action": a, "x": body.x, "y": body.y,
                                       "text": (body.text or "")[:80] if a == "key" else None, "device": d["name"]})
+        return {"ok": True}
+
+    # -- the router (chat) -----------------------------------------------------------
+    @app.get("/api/chat")
+    def chat(limit: int = 80, _d: dict = Depends(device)) -> list[dict]:
+        return store.chat("web", min(limit, 300))
+
+    @app.post("/api/chat")
+    def say(body: ChatIn, d: dict = Depends(device)) -> dict:
+        if router is None:  # no routing layer: straight to a worker
+            tid = agent.submit(body.text, source=f"app:{d['name']}", origin="web")
+            return {"task_id": tid}
+        return router.human("web", body.text, sender=d["name"])
+
+    # -- triggers -----------------------------------------------------------------------
+    def _trigger_out(t: dict) -> dict:
+        out = {k: v for k, v in t.items() if k not in {"state"}}
+        out["hook_path"] = f"/api/hooks/{t['id']}" if t["kind"] == "webhook" else None
+        return out
+
+    @app.get("/api/triggers")
+    def list_triggers(_d: dict = Depends(device)) -> list[dict]:
+        return [_trigger_out(t) for t in store.triggers()]
+
+    @app.post("/api/triggers")
+    def create_trigger(body: TriggerIn, _d: dict = Depends(device)) -> dict:
+        if triggers is None:
+            raise HTTPException(400, "Triggers are not enabled.")
+        try:
+            return _trigger_out(triggers.create(body.name, body.kind, body.config, body.instruction))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.patch("/api/triggers/{trigger_id}")
+    def patch_trigger(trigger_id: int, body: TriggerPatch, _d: dict = Depends(device)) -> dict:
+        if triggers is None or store.trigger(trigger_id) is None:
+            raise HTTPException(404, "No such trigger.")
+        triggers.set_enabled(trigger_id, body.enabled)
+        return _trigger_out(store.trigger(trigger_id))
+
+    @app.delete("/api/triggers/{trigger_id}")
+    def delete_trigger(trigger_id: int, _d: dict = Depends(device)) -> dict:
+        if triggers is not None:
+            triggers.delete(trigger_id)
+        return {"ok": True}
+
+    @app.post("/api/hooks/{trigger_id}")
+    async def hook(trigger_id: int, request: Request) -> dict:
+        """Public, but only with the trigger's secret (header X-Relay-Secret or ?secret=)."""
+        ip = request.client.host if request.client else "?"
+        if not hook_limiter.allow(ip):
+            raise HTTPException(429, "Too many requests.")
+        raw = (await request.body())[:20_000]
+        try:
+            payload: Any = json.loads(raw) if raw else {}
+        except ValueError:
+            payload = raw.decode("utf-8", errors="replace")
+        secret = request.headers.get("x-relay-secret") or request.query_params.get("secret")
+        if triggers is None or not triggers.webhook(trigger_id, secret, payload):
+            raise HTTPException(404, "Unknown hook or wrong secret.")
         return {"ok": True}
 
     # -- settings, devices, memory ---------------------------------------------------

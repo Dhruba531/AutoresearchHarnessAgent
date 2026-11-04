@@ -30,7 +30,7 @@ CANNED = {
     "reminder_create": "created",
     "notes_search": [{"name": "Trip ideas", "snippet": "Kyoto in spring"}],
     "note_create": "created",
-    "mail_recent": [{"id": 101, "from": "alice@example.com", "subject": "Lunch?", "date": "2026-11-04"}],
+    "mail_recent": [{"id": 101, "from": "alice@example.com", "subject": "Lunch?", "date": "2026-11-04", "unread": True}],
     "mail_read": {"from": "alice@example.com", "subject": "Lunch?", "body": "Free at 1pm?"},
     "mail_compose": "draft created",
     "messages_send": "sent",

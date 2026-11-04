@@ -5,7 +5,8 @@ Create a bot with @BotFather, set RELAY_TELEGRAM_TOKEN, then in the chat send
 `/pair CODE` with a code from `python -m macagent pair`. Only paired chats are
 obeyed; everything else is ignored.
 
-  plain text      → a new task (or, as a reply to a task message, a follow-up)
+  plain text      → the router, which replies, dispatches tasks, or steers them
+  reply to a task → a follow-up for that task
   /status         → current task and pending approvals
   /tasks          → recent tasks
   /screen         → a screenshot of the Mac
@@ -30,13 +31,18 @@ log = logging.getLogger("relay.telegram")
 
 
 class TelegramBot:
-    def __init__(self, token: str, agent: Agent, store: Store, transport=None):
+    """Both an inbound source and a router channel ("telegram:<chat id>")."""
+
+    name = "telegram"
+
+    def __init__(self, token: str, agent: Agent, store: Store, transport=None, router=None):
         self.base = f"https://api.telegram.org/bot{token}"
         self.agent, self.store = agent, store
         self.http = httpx.AsyncClient(timeout=60, transport=transport)
         self.offset = store.get("telegram_offset", 0)
         self.task_messages: dict[tuple[int, int], int] = {}  # (chat, message) → task id
         self.question_messages: dict[tuple[int, int], int] = {}  # (chat, message) → approval id
+        self.router = router
 
     # -- plumbing --------------------------------------------------------------------
     async def call(self, method: str, **params) -> dict:
@@ -103,13 +109,18 @@ class TelegramBot:
             rows = self.store.tasks(10)
             return await self.say(chat, "\n".join(f"#{t['id']} {t['status']} — {t['title']}" for t in rows) or "No tasks yet.")
         if text == "/stop":
-            if self.agent.current:
-                self.agent.cancel(self.agent.current)
-                return await self.say(chat, "Stopping the current task.")
-            return await self.say(chat, "Nothing is running.")
+            running = list(self.agent.running)
+            for tid in running:
+                self.agent.cancel(tid)
+            return await self.say(chat, f"Stopping {len(running)} task(s)." if running else "Nothing is running.")
         if text == "/screen":
             return await self.send_screen(chat)
-        tid = self.agent.submit(text, source="telegram")
+        if self.router is not None:
+            name = (msg.get("from") or {}).get("first_name") or "user"
+            self.router.human(f"telegram:{chat}", text, sender=name)
+            await self.call("sendChatAction", chat_id=chat, action="typing")
+            return
+        tid = self.agent.submit(text, source="telegram", origin=f"telegram:{chat}")
         sent = await self.say(chat, f"On it — task #{tid}. Reply to this message to add details.")
         self.task_messages[(chat, sent["message_id"])] = tid
 
@@ -141,8 +152,8 @@ class TelegramBot:
                             text=f"{q['message'].get('text', '')}\n\n{label}")
 
     def status_text(self) -> str:
-        cur = self.store.task(self.agent.current) if self.agent.current else None
-        lines = [f"Running: #{cur['id']} {cur['title']} ({cur['status']})" if cur else "Idle."]
+        running = [self.store.task(t) for t in self.agent.running]
+        lines = [f"Running: #{t['id']} {t['title']} ({t['status']})" for t in running if t] or ["Idle."]
         for a in self.store.pending_approvals():
             lines.append(f"Waiting on you: {a['summary']}")
         return "\n".join(lines)
@@ -167,14 +178,17 @@ class TelegramBot:
                 await self.say(chat, f"🔐 Approve ({approval['risk']})?\n{approval['summary']}\n\ntask #{task['id']}: "
                                      f"{task['title']}", reply_markup=buttons)
 
-    async def finished(self, task: dict) -> None:
-        if task["status"] not in {"done", "failed", "blocked"}:
+    # -- router channel ------------------------------------------------------------
+    def targets(self) -> list[str]:
+        return [f"telegram:{c}" for c in self.chats()]
+
+    async def send(self, target: str, text: str, *, task_id: int | None = None, notify: bool = False) -> None:
+        chat = int(target.split(":", 1)[1])
+        if not self.authorized(chat):
             return
-        icon = {"done": "✅", "failed": "❌", "blocked": "⚠️"}[task["status"]]
-        body = task.get("result") or task.get("error") or ""
-        for chat in self.chats():
-            sent = await self.say(chat, f"{icon} #{task['id']} {task['title']}\n\n{body}")
-            self.task_messages[(chat, sent["message_id"])] = task["id"]
+        sent = await self.say(chat, text)
+        if task_id:
+            self.task_messages[(chat, sent["message_id"])] = task_id
 
 
 __all__ = ["TelegramBot", "json"]
