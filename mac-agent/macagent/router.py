@@ -488,6 +488,7 @@ class Router:
     async def route(self, batch: list[dict]) -> None:
         try:
             adapter = self.adapter_factory()
+            t_route = time.monotonic()
             history: list[dict] = [{"role": "user", "content": self.render(batch)}]
             ctx = {"replied": set(), "dispatched": []}
             for hop in range(MAX_READ_HOPS + 1):
@@ -501,6 +502,8 @@ class Router:
                 history.append({"role": "assistant", "content": turn.content})
                 history.append({"role": "user", "content": results})
             await self._announce(ctx)
+            took = round(time.monotonic() - t_route, 2)
+            self.store.put("router_timings", (self.store.get("router_timings", []) + [took])[-20:])
         except LLMError as exc:
             log.warning("router model unavailable (%s); using fallback", exc)
             await self.fallback(batch)

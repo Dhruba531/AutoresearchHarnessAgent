@@ -18,6 +18,7 @@ obeyed; everything else is ignored.
   /clip · /copy   → read the Mac's clipboard, or put text on it
   /open Safari    → open an app · /lock → lock the screen
   /spend · /cap 2 → today's cost per provider · set the daily cap
+  /speed          → where the time went on recent tasks (model, Mac, waiting)
   /app            → a one-time link that opens the full Relay app (inside Telegram, or any browser)
   approvals       → Approve / Deny buttons; questions → reply with the answer
 
@@ -116,7 +117,7 @@ class TelegramBot(Commands):
                 ("mac", "Battery, disk, uptime, the app in front"), ("get", "Send me a file: /get name"),
                 ("clip", "What's on the Mac's clipboard"), ("copy", "Put text on the clipboard: /copy text"),
                 ("open", "Open an app: /open Safari"), ("lock", "Lock the Mac's screen"),
-                ("spend", "Today's cost; /cap 2 sets the daily cap"), ("status", "What's running and waiting for you"),
+                ("spend", "Today's cost; /cap 2 sets the daily cap"), ("speed", "Where the time went on recent tasks"), ("status", "What's running and waiting for you"),
                 ("tasks", "Recent tasks"), ("screen", "A screenshot of the Mac"), ("stop", "Stop the running task"),
                 ("help", "What I can do")]
 

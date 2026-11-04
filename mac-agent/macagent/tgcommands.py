@@ -60,7 +60,8 @@ class Commands:
         cmd, _, arg = text.partition(" ")
         cmd, arg = cmd.split("@", 1)[0].lower(), arg.strip()
         handlers = {"/mac": self.cmd_mac, "/spend": self.cmd_spend, "/cap": self.cmd_cap, "/open": self.cmd_open,
-                    "/clip": self.cmd_clip, "/copy": self.cmd_copy, "/get": self.cmd_get, "/lock": self.cmd_lock}
+                    "/clip": self.cmd_clip, "/copy": self.cmd_copy, "/get": self.cmd_get, "/lock": self.cmd_lock,
+                    "/speed": self.cmd_speed}
         if cmd not in handlers:
             return False
         if group and cmd in PRIVATE_ONLY:
@@ -117,6 +118,27 @@ class Commands:
                 if p["today_calls"]:
                     lines.append(f"• {p['label']}: ${p['today_usd']:.3f} · {p['today_calls']} calls")
         lines.append("Set the cap with /cap 2 (dollars a day).")
+        await self.say(chat, "\n".join(lines))
+
+    async def cmd_speed(self, chat: int, arg: str) -> None:
+        """Where the time went on the last tasks: the model, the Mac, waiting."""
+        recent = self.store.get("timings", [])[-5:]
+        router = self.store.get("router_timings", [])
+        if not recent and not router:
+            return await self.say(chat, "No timings yet. Ask me to do something, then send /speed.")
+        lines = []
+        for r in reversed(recent):
+            per = r["model_s"] / r["calls"] if r["calls"] else 0
+            lines.append(f"#{r['id']} {r['title'][:40]}: {r['total_s']:.1f} s\n"
+                         f"   model {r['model_s']:.1f} s over {r['calls']} call{'s' if r['calls'] != 1 else ''} "
+                         f"({per:.1f} s each, {r['model'].split('/')[-1]}) · Mac actions {r['tool_s']:.1f} s"
+                         + (f" · waited {r['wait_s']:.1f} s" if r["wait_s"] >= 1 else ""))
+        if router:
+            lines.append(f"Chat model (router): {sum(router) / len(router):.1f} s per decision on average")
+        slow = [r for r in recent if r["calls"] and r["model_s"] / r["calls"] > 4]
+        if slow:
+            lines.append("\nMost of the time is the model thinking. For everyday tasks a faster one helps: "
+                         "/model haiku (Claude, fast), or /model gemini (fast and cheap, needs a Gemini key).")
         await self.say(chat, "\n".join(lines))
 
     async def cmd_cap(self, chat: int, arg: str) -> None:

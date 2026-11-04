@@ -187,3 +187,47 @@ async def test_telegram_keeps_typing_while_relay_works(tmp_path):
     agent.running.pop(tid)
     await bot.send("telegram:5", "Done.")
     assert 5 not in bot.typing  # answered, nothing running: stop
+
+
+def test_openrouter_asks_for_short_reasoning(tmp_path):
+    bodies = []
+
+    def handler(req):
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}], "usage": {}})
+
+    ad = OpenAICompatAdapter("openrouter", "k", "anthropic/claude-opus-5.5", transport=httpx.MockTransport(handler))
+    asyncio.run(ad.step("S", [{"role": "user", "content": "hi"}], SPECS))
+    assert bodies[0]["reasoning"] == {"effort": "low"} and "reasoning_effort" not in bodies[0]
+
+
+@pytest.mark.asyncio
+async def test_speed_shows_where_the_time_went(tmp_path):
+    def worker(body):
+        n = sum(1 for m in body["messages"] if m["role"] == "assistant")
+        if n == 0:
+            return [tool("t", "run_shell", {"command": "echo hi"})], "tool_use"
+        return [{"type": "text", "text": "Done."}], "end_turn"
+
+    settings, store, agent, router, wmock, lmock = build(tmp_path, worker, lambda b: ([], "end_turn"))
+    settings.policy = "autonomous"
+    agent.start()
+    tid = agent.submit("say hi", origin="web")
+    await until(lambda: store.task(tid)["status"] == "done" and store.get("timings"))
+    await agent.stop()
+    rec = store.get("timings")[-1]
+    assert rec["id"] == tid and rec["calls"] == 2 and rec["model_s"] >= 0 and rec["tool_s"] >= 0
+    assert rec["total_s"] >= rec["model_s"]
+
+    calls = []
+
+    def handler(req):
+        calls.append(json.loads(req.content or b"{}"))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    bot = TelegramBot("1:a", agent, store, transport=httpx.MockTransport(handler))
+    store.x("INSERT INTO telegram_chats(chat_id, name, created_at) VALUES (5, 'me', 0)")
+    store.put("router_timings", [1.0, 2.0])
+    await bot.handle({"message": {"chat": {"id": 5, "type": "private"}, "text": "/speed", "from": {}}})
+    text = calls[-1]["text"]
+    assert f"#{tid}" in text and "2 calls" in text and "1.5 s per decision" in text

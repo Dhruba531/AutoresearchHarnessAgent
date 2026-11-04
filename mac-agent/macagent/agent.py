@@ -172,6 +172,7 @@ class Agent:
         self.machines = host if isinstance(host, MachineRegistry) else MachineRegistry(store, host)
         self.adapter_factory = adapter_factory
         self.light_factory = light_factory  # the fast model, for quick tasks
+        self.timing: dict[int, dict] = {}  # task → time spent in the model and in Mac actions (for /speed)
         self.bus = Bus()
         self.notifiers: list[Notifier] = []
         self.listeners: list = []          # task ended → router
@@ -261,8 +262,22 @@ class Agent:
             except asyncio.TimeoutError:
                 pass
 
+    def _record_timing(self, tid: int) -> None:
+        """Keep where the time went for the last tasks, for /speed."""
+        tm, task = self.timing.pop(tid, None), self.store.task(tid)
+        if not tm or not task or not task.get("ended_at"):
+            return
+        rec = {"id": tid, "title": task["title"], "status": task["status"], "model": tm["model"],
+               "calls": tm["calls"], "model_s": round(tm["model_s"], 2), "tool_s": round(tm["tool_s"], 2),
+               "total_s": round(task["ended_at"] - task["created_at"], 2),
+               "wait_s": round((task.get("started_at") or task["created_at"]) - task["created_at"], 2),
+               "at": task["ended_at"]}
+        recent = [r for r in self.store.get("timings", []) if r.get("id") != tid][-19:]
+        self.store.put("timings", recent + [rec])
+
     def _finished(self, tid: int, fut: asyncio.Task) -> None:
         self.running.pop(tid, None)
+        self._record_timing(tid)
         self._release_screen(tid)
         if not fut.cancelled() and fut.exception() is not None:  # never let one task kill the pool
             log.error("task %s crashed", tid, exc_info=fut.exception())
@@ -618,7 +633,12 @@ class Agent:
                     self._status(task_id, "blocked", error=f"Daily spend cap ${self.settings.daily_cap_usd:.2f} reached "
                                  f"(${spent:.2f} today).")
                     break
+                t_model = time.monotonic()
                 turn: Turn = await adapter.step(system, history, tools)
+                tm = self.timing.setdefault(task_id, {"model_s": 0.0, "calls": 0, "tool_s": 0.0, "model": ""})
+                tm["model_s"] += time.monotonic() - t_model
+                tm["calls"] += 1
+                tm["model"] = turn.model or tm["model"]
                 steps += 1
                 self.store.add_spend(task_id, turn.cost_usd)
                 history.append({"role": "assistant", "content": turn.content})
@@ -673,6 +693,8 @@ class Agent:
                     content = res.content if isinstance(res.content, list) else [{"type": "text", "text": res.content or "OK"}]
                     results.append({"type": "tool_result", "tool_use_id": b["id"], "content": content,
                                     **({"is_error": True} if res.is_error else {}), **echo})
+                    tm = self.timing.setdefault(task_id, {"model_s": 0.0, "calls": 0, "tool_s": 0.0, "model": ""})
+                    tm["tool_s"] += time.monotonic() - t0
                     tier, summary = classify(b["name"], b.get("input") or {}, b.get("toolset_name"), self.settings)
                     preview = res.content if isinstance(res.content, str) else ""
                     self._emit(task_id, "tool", {

@@ -172,7 +172,7 @@ class OpenAICompatAdapter:
         self.provider, self.model, self.key = provider, model, api_key
         self.base = (base_url or BASE_URLS.get(provider, BASE_URLS["openai"])).rstrip("/")
         m = model.lower()
-        self.reasoning = "low" if (provider == "gemini" or m.startswith(("gpt-5", "o3", "o4"))) else ""
+        self.reasoning = "low" if (provider in {"gemini", "openrouter"} or m.startswith(("gpt-5", "o3", "o4"))) else ""
         self.transport = transport
 
     @staticmethod
@@ -219,8 +219,11 @@ class OpenAICompatAdapter:
         }
         # GPT-5-era models take max_completion_tokens; everyone else max_tokens
         body["max_completion_tokens" if self.provider == "openai" else "max_tokens"] = 8192
-        if self.reasoning:
-            body["reasoning_effort"] = self.reasoning  # low: answer fast instead of thinking long
+        if self.reasoning:  # low: answer fast instead of thinking long
+            if self.provider == "openrouter":
+                body["reasoning"] = {"effort": self.reasoning}  # OpenRouter's one setting for every model
+            else:
+                body["reasoning_effort"] = self.reasoning
         try:
             async with httpx.AsyncClient(timeout=600, transport=self.transport) as http:
                 headers = {"Authorization": f"Bearer {self.key}"}
