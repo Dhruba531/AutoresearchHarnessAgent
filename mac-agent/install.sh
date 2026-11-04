@@ -138,7 +138,13 @@ main() {
   say "Starting Relay (and at every login)"
   RELAY_HOME="$HOME_DIR" "$VPY" -m macagent install-launchagent >/dev/null
   if [ -n "$TS_ON" ]; then
-    "$TS" serve --bg "$PORT" >/dev/null 2>&1 && say "Shared privately on your tailnet (works anywhere)" || true
+    # The first time, Tailscale asks you to turn on HTTPS for your tailnet and prints a link: show it.
+    if OUT="$("$TS" serve --bg "$PORT" 2>&1 </dev/null)"; then
+      say "Shared privately on your tailnet: works from anywhere (uni, bus, mobile data)"
+    else
+      echo "$OUT" | sed 's/^/  /'
+      echo "  Tailscale needs one setting first: open the link above, turn on HTTPS, then run this script again."
+    fi
   elif grep -q '^RELAY_BIND=0.0.0.0' "$ENV_FILE"; then
     say "Open to this Wi-Fi. If macOS asks whether python3 may accept incoming connections, click Allow."
     echo "  To use it away from home: install Tailscale on the Mac and phone, sign in, run this again."
