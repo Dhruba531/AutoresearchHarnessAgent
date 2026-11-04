@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime
@@ -66,6 +67,7 @@ Pick a machine when the work needs a specific one.
 - create_trigger / delete_trigger: when the user wants something to happen automatically ("whenever…").
 - remember: lasting facts about the user worth keeping.
 - switch_model: when the user asks to use another model or provider; then reply with what runs now.
+- outbox: when a finding should also go to email, GitHub or a public post. Each channel has its own form: chat stays short (100 words); email is a proper letter with a subject; GitHub is markdown with sections; a public post is one short paragraph with nothing private. Email and GitHub go out only after the user approves; public posts come back to the user as drafts.
 - read: follow an ID (W7, E12, thread:…, chat:web) when you need details you only have one line of — for \
 example to answer "did the thing from yesterday get fixed?".
 - ignore: for events that need nothing (say why).
@@ -114,11 +116,24 @@ ROUTER_TOOLS = [
      "what the user just said.", "input_schema": _obj(question_id={"type": "integer"}, answer=_s("the answer"))},
     {"name": "create_trigger", "description": "Create an automation that wakes you when something happens. kinds: "
      "folder {path, pattern?} — new files; mail {query?} — new unread email; calendar {minutes_before?} — upcoming "
-     "events; system {battery_below?, disk_free_below_gb?}; webhook {} — an HTTP endpoint (iOS Shortcuts, IFTTT…).",
-     "input_schema": _obj(name=_s("short name"), kind={"type": "string", "enum": ["folder", "mail", "calendar", "system", "webhook"]},
+     "events; system {battery_below?, disk_free_below_gb?}; webhook {} — an HTTP endpoint (iOS Shortcuts, IFTTT…); "
+     "github {} — a repository's issues, pull requests, reviews, comments and CI failures (the user adds the webhook "
+     "in GitHub).",
+     "input_schema": _obj(name=_s("short name"), kind={"type": "string", "enum": ["folder", "mail", "calendar", "system",
+                                                                                  "webhook", "github"]},
                           config={"type": "object", "description": "kind-specific settings"},
                           instruction=_s("what to do each time it fires, in the user's words"))},
     {"name": "delete_trigger", "description": "Delete an automation.", "input_schema": _obj(trigger_id={"type": "integer"})},
+    {"name": "outbox", "description": "Send a finding somewhere other than chat, in that channel's own form. "
+     "email: a real email (subject, greeting, short paragraphs, sign-off) sent after the user approves. "
+     "github: GitHub markdown (## Summary, ## Details, ## Next steps) posted as a comment or PR description after "
+     "the user approves. public: a short public post (max 280 characters, nothing private) that comes to the user "
+     "as a draft to post themselves.",
+     "input_schema": _obj(channel={"type": "string", "enum": ["email", "github", "public"]},
+                          text=_s("the message, already written in that channel's style"),
+                          to=_s("email: the recipient address", True), subject=_s("email: the subject line", True),
+                          repo=_s("github: owner/name", True), number={"type": "integer", "opt": True},
+                          where={"type": "string", "enum": ["comment", "pr_description"], "opt": True})},
     {"name": "switch_model", "description": "Switch the AI model Relay runs on, when the user asks (e.g. 'use "
      "gemini', 'switch to gpt nano', 'go back to claude'). Only providers listed under Models can be used.",
      "input_schema": _obj(provider={"type": "string", "enum": ["gemini", "deepseek", "openai", "openrouter", "anthropic",
@@ -201,6 +216,7 @@ class Router:
         self.decisions = 0
         agent.listeners.append(self.on_task_finished)
         agent.report_listeners.append(self.on_worker_report)
+        agent.handback_listeners.append(self.on_hand_back)
 
     # -- inputs -------------------------------------------------------------------
     def add_channel(self, channel: Channel) -> None:
@@ -239,7 +255,18 @@ class Router:
                      "explicit": explicit, "thread": thread})
         return msg
 
+    def on_hand_back(self, task: dict, ev: dict, reason: str) -> None:
+        """§6: a worker gives an event back; route it again, to anyone but that worker."""
+        p = dict(ev.get("payload") or {})
+        by = list(dict.fromkeys([*(p.get("_handed_back_by") or []), task["id"]]))
+        payload = {k: v for k, v in p.items() if k in {"_trigger_kind", "_trigger"}}
+        payload.update({"_handed_back_by": by, "_handback_reason": reason, "_original": ev["id"]})
+        self.submit({"kind": ev["kind"], "source": ev["source"], "reply": p.get("_reply"), "text": ev["text"],
+                     "sender": ev.get("sender"), "thread": ev.get("thread"), "explicit": True, "payload": payload})
+
     def on_task_finished(self, task: dict) -> None:
+        if (task.get("origin") or "").startswith("task:"):
+            return  # a sub-worker: its parent worker gets the result, not the user
         if task["status"] in {"done", "failed", "blocked", "cancelled"} and task.get("origin"):
             body = task.get("result") or task.get("error") or ""
             self.submit({"kind": "task_finished", "source": f"worker:{task['id']}", "reply": task["origin"],
@@ -448,6 +475,9 @@ class Router:
             if ev["kind"] == "trigger" and p.get("_trigger"):
                 t = p["_trigger"]
                 evs.append(f"(trigger #{t['id']} \"{t['name']}\", the user's instruction: {t['instruction']})")
+            if p.get("_handed_back_by"):
+                evs.append(f"(handed back by {', '.join('W' + str(w) for w in p['_handed_back_by'])}: "
+                           f"{p.get('_handback_reason') or 'not theirs'} — route it again, not to them)")
             if ev["kind"] in {"task_finished", "worker_report"}:
                 evs.append(f"(from worker W{p.get('_task_id')}, report to {p.get('_reply')})")
             elif p.get("_reply"):
@@ -558,8 +588,17 @@ class Router:
                     if t["kind"] == "webhook":
                         await self.send(primary, f"Webhook for “{t['name']}”: POST to /api/hooks/{t['id']} with header "
                                                  f"X-Relay-Secret: {t['secret']}")
+                    elif t["kind"] == "github":
+                        base = os.environ.get("RELAY_PUBLIC_URL", "https://<your Relay address>").rstrip("/")
+                        await self.send(primary, f"GitHub trigger “{t['name']}” is ready. In the repository: Settings → "
+                                                 f"Webhooks → Add webhook. Payload URL: {base}/api/hooks/{t['id']} · "
+                                                 f"Content type: application/json · Secret: {t['secret']} · choose "
+                                                 f"Issues, Issue comments, Pull requests, Pull request reviews and "
+                                                 f"Workflow runs. (GitHub must reach Relay: Tailscale Funnel on.)")
                 elif name == "delete_trigger" and self.triggers is not None:
                     self.triggers.delete(int(inp["trigger_id"]))
+                elif name == "outbox":
+                    out = await self._outbox(inp, primary, ctx)
                 elif name == "switch_model":
                     if self.models is None:
                         out = "model switching is not available"
@@ -588,6 +627,39 @@ class Router:
                     await self.send(primary, f"I couldn't do that ({name}): {exc}")
             results.append({"type": "tool_result", "tool_use_id": b["id"], "content": str(out)[:8000]})
         return results
+
+    async def _outbox(self, inp: dict, primary: str, ctx: dict) -> str:
+        """Per-channel forms (§9). Sends that leave the user's own chats go through a worker, so the normal
+        approval asks the user first; a public post comes back as a draft."""
+        ch, text = inp.get("channel"), str(inp.get("text", "")).strip()
+        if not text:
+            raise ValueError("outbox needs the text")
+        if ch == "public":
+            note = f" ({len(text)} characters: X allows 280)" if len(text) > 280 else ""
+            await self.send(primary, f"Draft for a public post{note}. Copy it and post it yourself, or tell me what "
+                                     f"to change:\n\n{text}")
+            ctx["replied"].add(primary)
+            return "draft sent to the user"
+        if ch == "email":
+            to, subject = str(inp.get("to") or "").strip(), str(inp.get("subject") or "").strip()
+            if "@" not in to or not subject:
+                raise ValueError("an email needs to (an address) and subject")
+            instructions = (f"Send exactly this email with mail_send (no changes):\nTo: {to}\nSubject: {subject}\n"
+                            f"Body:\n{text}")
+            title = f"Email {to}: {subject}"[:60]
+        elif ch == "github":
+            repo, number = str(inp.get("repo") or "").strip(), inp.get("number")
+            if "/" not in repo or not number:
+                raise ValueError("a GitHub post needs repo (owner/name) and number")
+            where = inp.get("where") or "comment"
+            instructions = (f"Post exactly this with github_post (repo {repo}, number {number}, where {where}); "
+                            f"don't change it:\n\n{text}")
+            title = f"GitHub {repo}#{number}"
+        else:
+            raise ValueError("channel must be email, github or public")
+        tid = self.agent.submit(instructions, source=f"router:{primary}", origin=primary, title=title, quick=True)
+        ctx["dispatched"].append((tid, primary, title, "normal"))
+        return f"started W{tid}; it asks the user to approve before sending"
 
     def _dispatch(self, inp: dict, batch: list[dict], by_id: dict, primary: str, ctx: dict, dest) -> str:
         to = dest(inp.get("to"))

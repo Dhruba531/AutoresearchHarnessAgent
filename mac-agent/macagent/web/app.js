@@ -299,10 +299,10 @@ function viewWatchdog() {
 
 const SOURCE_LABEL = {
   web: "Phone app", telegram: "Telegram", "telegram-group": "Telegram groups", "trigger:mail": "Mail",
-  "trigger:folder": "Folders", "trigger:calendar": "Calendar", "trigger:webhook": "Webhooks",
+  "trigger:folder": "Folders", "trigger:calendar": "Calendar", "trigger:webhook": "Webhooks", "trigger:github": "GitHub",
   "trigger:schedule": "Schedules", "trigger:system": "Mac status", trigger: "Triggers", router: "Workers", system: "System",
 };
-const TRIGGER_SOURCE = { mail: "trigger:mail", folder: "trigger:folder", calendar: "trigger:calendar", webhook: "trigger:webhook",
+const TRIGGER_SOURCE = { mail: "trigger:mail", folder: "trigger:folder", calendar: "trigger:calendar", webhook: "trigger:webhook", github: "trigger:github",
   schedule: "trigger:schedule", system: "trigger:system" };
 
 function sysSources(x) {
@@ -636,6 +636,7 @@ function viewMachines() {
 const TRIG = {
   folder: ["📁", "New files in a folder"], mail: ["✉️", "New unread email"], calendar: ["📅", "Event about to start"],
   system: ["🖥", "Disk or battery low"], webhook: ["🔗", "Webhook (Shortcuts, IFTTT…)"],
+  github: ["🐙", "GitHub repository (issues, PRs, CI)"],
 };
 
 function viewAutomations() {
@@ -648,6 +649,7 @@ function viewAutomations() {
     system: `<input class="field" id="trig-disk" type="number" placeholder="Disk free below (GB)" value="${esc(f.disk)}">
              <input class="field" id="trig-battery" type="number" placeholder="Battery below (%)" value="${esc(f.battery)}">`,
     webhook: `<p class="muted small" style="margin:0">You get a URL and secret to call from Shortcuts, IFTTT or Home Assistant.</p>`,
+    github: `<p class="muted small" style="margin:0">You get a Payload URL and secret to paste into the repository's Settings → Webhooks. GitHub must reach Relay, so turn on "any browser" (Tailscale Funnel).</p>`,
   }[f.kind];
   return `<div class="card"><div class="label">Automations</div>
     <p class="muted small" style="margin:6px 0 4px">When something happens on your Mac, Relay's router decides what to do with your instruction.
@@ -660,6 +662,7 @@ function viewAutomations() {
       <div class="muted small">${esc(TRIG[t.kind]?.[1] || t.kind)}${t.config?.path ? " · " + esc(t.config.path) : ""} · fired ${t.fire_count}×${t.last_fired ? ", " + esc(ago(t.last_fired)) : ""}
         ${t.last_error ? `<br><span style="color:var(--bad)">${esc(t.last_error)}</span>` : ""}</div>
       ${t.kind === "webhook" ? `<pre class="hook">POST ${esc(location.origin + t.hook_path)}\nX-Relay-Secret: ${esc(t.secret)}</pre>` : ""}
+      ${t.kind === "github" ? `<pre class="hook">Payload URL: ${esc(location.origin + t.hook_path)}\nContent type: application/json\nSecret: ${esc(t.secret)}\nEvents: Issues, Issue comments, Pull requests,\n  Pull request reviews, Workflow runs</pre>` : ""}
     </div>`).join("") || `<p class="muted small">No automations yet.</p>`}
     <form data-form="trigger" class="trigform">
       <select class="field" id="trig-kind">${Object.entries(TRIG).map(([k, [ic, l]]) =>

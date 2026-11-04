@@ -38,7 +38,7 @@ DEFAULT_POLICIES = [
 DEFAULT_RULES = {
     "sources": {
         "web": "admit", "telegram": "admit", "telegram-group": "candidate",
-        "trigger": "admit", "trigger:mail": "candidate", "trigger:webhook": "admit",
+        "trigger": "admit", "trigger:mail": "candidate", "trigger:webhook": "admit", "trigger:github": "candidate",
     },
     "ignore_senders": ["*noreply*", "*no-reply*", "*mailer-daemon*", "*notifications@*"],
     "admit_senders": [],

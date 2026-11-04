@@ -65,6 +65,7 @@ class Settings:
     openai_api_key: str = field(default_factory=lambda: os.environ.get("OPENAI_API_KEY", ""))
     openrouter_api_key: str = field(default_factory=lambda: os.environ.get("OPENROUTER_API_KEY", ""))
     gemini_api_key: str = field(default_factory=lambda: os.environ.get("GEMINI_API_KEY", ""))
+    github_token: str = field(default_factory=lambda: os.environ.get("GITHUB_TOKEN", ""))  # for github_post
     # provider "local": any OpenAI-compatible server on this Mac (Ollama, LM Studio, llama.cpp, vLLM)
     local_base_url: str = field(default_factory=lambda: os.environ.get("RELAY_LOCAL_URL", "http://127.0.0.1:11434/v1"))
 

@@ -33,10 +33,13 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+
+import httpx
 
 from .config import Settings
 from .context import READ_TOOL, read as read_object, spill
@@ -108,9 +111,31 @@ WORKER_SPECS = [
     _spec("subscribe_thread", "Follow a Thread: its future events are delivered to you.",
           {"thread": {"type": "string"}}, ["thread"]),
     _spec("unsubscribe_thread", "Stop following a Thread.", {"thread": {"type": "string"}}, ["thread"]),
+    _spec("hand_back", "Give an event back to the router because it isn't yours to handle (another topic, or "
+          "someone else's job). You stop following its Thread and the router routes it again, not to you.",
+          {"event_id": {"type": "string", "description": "e.g. E12"}, "reason": {"type": "string"}},
+          ["event_id", "reason"]),
+    _spec("delegate", "Start a sub-worker for an independent piece of this task (up to 3 at once). It gets only "
+          "your instructions, so make them complete. Its result arrives here as a message; end your turn to wait.",
+          {"instructions": {"type": "string"}, "title": {"type": "string"},
+           "quick": {"type": "boolean", "description": "a lookup or one- or two-step action: use the fast model"}},
+          ["instructions"]),
+    _spec("github_post", "Post on GitHub, after the user approves: a comment on an issue or pull request, or a "
+          "pull request's description. Write GitHub markdown (## Summary, ## Details, ## Next steps).",
+          {"repo": {"type": "string", "description": "owner/name"}, "number": {"type": "integer"},
+           "body": {"type": "string"}, "where": {"type": "string", "enum": ["comment", "pr_description"]}},
+          ["repo", "number", "body"]),
 ]
+MAX_CHILDREN = 3
 DISCARD_SPEC = _spec("discard", "Background mode only: end this task without telling anyone, because nothing was "
                      "confirmed or nothing needs the user.", {"reason": {"type": "string"}}, ["reason"])
+
+
+
+def _parent_of(task: dict | None) -> int | None:
+    """A sub-worker's parent task id (its origin is "task:<id>"), else None."""
+    origin = (task or {}).get("origin") or ""
+    return int(origin[5:]) if origin.startswith("task:") and origin[5:].isdigit() else None
 
 
 class Notifier(Protocol):
@@ -177,6 +202,8 @@ class Agent:
         self.notifiers: list[Notifier] = []
         self.listeners: list = []          # task ended → router
         self.report_listeners: list = []   # worker report() → router
+        self.handback_listeners: list = []  # worker hand_back() → router
+        self.github_transport = None  # tests replace the network
         self.waiting: dict[int, asyncio.Future] = {}
         self.inbox: dict[int, list[str]] = {}
         self.wakeups: dict[int, asyncio.Event] = {}
@@ -216,12 +243,16 @@ class Agent:
     # -- lifecycle ---------------------------------------------------------------
     def recover(self) -> None:
         """Sessions live in the database: resume what a restart interrupted."""
+        lost_jobs = self.store.get("jobs_live", {})  # jobs that were running when Relay stopped
+        self.store.put("jobs_live", {})
         for t in self.store.all("SELECT id, resume_count FROM tasks WHERE status IN ('running','waiting','paused')"):
             if (t["resume_count"] or 0) < MAX_RESUMES:
                 self.store.update_task(t["id"], status="queued", resume_count=(t["resume_count"] or 0) + 1)
+                lost = [f"[J{j}] {v['command']}" for j, v in lost_jobs.items() if v.get("task") == t["id"]]
                 self.inbox.setdefault(t["id"], []).append(
-                    "Relay restarted while you were working; your session was reloaded. Background jobs started "
-                    "before the restart were stopped — start them again if you still need them.")
+                    "Relay restarted while you were working; your session was reloaded."
+                    + (" These background jobs were stopped by the restart and did not finish: " + "; ".join(lost)
+                       + ". Start them again if you still need them." if lost else ""))
                 self.store.add_event(t["id"], "status", {"status": "resumed", "error": "resumed after a restart"})
             else:
                 self.store.update_task(t["id"], status="interrupted",
@@ -278,6 +309,13 @@ class Agent:
     def _finished(self, tid: int, fut: asyncio.Task) -> None:
         self.running.pop(tid, None)
         self._record_timing(tid)
+        task = self.store.task(tid)
+        parent = _parent_of(task) if task else None
+        if parent and task["status"] in {"done", "failed", "blocked", "cancelled", "discarded"}:
+            body = task.get("result") or task.get("error") or ""
+            oid = self.store.add_object(parent, "subtask", body, f"W{tid} result") if len(body) > 1500 else None
+            self.deliver(parent, f"[W{tid}] (your sub-worker) ended {task['status']}: "
+                         + (body[:1500] + f"… Full result → read(O{oid})" if oid else body), kind="subtask")
         self._release_screen(tid)
         if not fut.cancelled() and fut.exception() is not None:  # never let one task kill the pool
             log.error("task %s crashed", tid, exc_info=fut.exception())
@@ -390,6 +428,32 @@ class Agent:
         self._emit(appr["task_id"], "decision", {"approval_id": approval_id, "status": status, "answer": answer, "via": via})
         return True
 
+    def live_children(self, task_id: int) -> list[int]:
+        rows = self.store.all("SELECT id FROM tasks WHERE origin=? AND status IN "
+                              "('queued','scheduled','running','waiting','paused')", (f"task:{task_id}",))
+        return [r["id"] for r in rows]
+
+    async def _github_post(self, inp: dict) -> Result:
+        token = self.settings.github_token
+        if not token:
+            raise ToolError("no GitHub token: add GITHUB_TOKEN to ~/.relay/env (a fine-grained token with Issues and "
+                            "Pull requests write access) and restart Relay")
+        repo, number, body = str(inp["repo"]).strip(), int(inp["number"]), str(inp["body"])
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+            raise ToolError("repo must be owner/name")
+        where = inp.get("where") or "comment"
+        url = (f"https://api.github.com/repos/{repo}/pulls/{number}" if where == "pr_description"
+               else f"https://api.github.com/repos/{repo}/issues/{number}/comments")
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                   "X-GitHub-Api-Version": "2022-11-28"}
+        async with httpx.AsyncClient(timeout=30, transport=self.github_transport) as http:
+            r = await (http.patch(url, json={"body": body}, headers=headers) if where == "pr_description"
+                       else http.post(url, json={"body": body}, headers=headers))
+        if r.status_code >= 300:
+            raise ToolError(f"GitHub said {r.status_code}: {r.text[:200]}")
+        link = r.json().get("html_url", "")
+        return Result(f"Posted on GitHub{': ' + link if link else ''}.")
+
     def live_jobs(self, task_id: int) -> list[Job]:
         return [j for j in self.jobs.values() if j.task_id == task_id and j.runner and not j.runner.done()]
 
@@ -488,6 +552,14 @@ class Agent:
     # -- worker-only tools -----------------------------------------------------------------
     async def _job(self, job: Job, host: Host, timeout: int) -> None:
         try:
+            await self._job_body(job, host, timeout)
+        finally:  # no longer running: forget it (a restart only reports jobs that were still live)
+            live = self.store.get("jobs_live", {})
+            if live.pop(str(job.id), None) is not None:
+                self.store.put("jobs_live", live)
+
+    async def _job_body(self, job: Job, host: Host, timeout: int) -> None:
+        try:
             proc = await host.shell(job.command, timeout=timeout)
         except asyncio.CancelledError:
             if not job.quiet:
@@ -510,6 +582,9 @@ class Agent:
             timeout = max(10, min(int(inp.get("timeout_s") or 3600), 6 * 3600))
             job.runner = asyncio.create_task(self._job(job, host, timeout))
             self.jobs[job.id] = job
+            live = self.store.get("jobs_live", {})
+            live[str(job.id)] = {"task": tid, "command": job.command[:200], "started": job.started}
+            self.store.put("jobs_live", live)
             return Result(f"Started [J{job.id}]. It runs in the background; its result will arrive as a message. "
                           "Keep working, or end your turn to wait for it.")
         if name == "job_stop":
@@ -524,8 +599,12 @@ class Agent:
             text = str(inp.get("text", "")).strip()
             if not text:
                 raise ToolError("empty report")
-            for cb in self.report_listeners:
-                cb(self.store.task(tid), text)
+            parent = _parent_of(task)
+            if parent:
+                self.deliver(parent, f"[W{tid}] (your sub-worker) reports: {text}", kind="subtask")
+            else:
+                for cb in self.report_listeners:
+                    cb(self.store.task(tid), text)
             self._emit(tid, "report", {"text": text})
             return Result("Sent to the router; it will tell the user.")
         if name == "read":
@@ -536,6 +615,32 @@ class Agent:
         if name == "unsubscribe_thread":
             self.store.unsubscribe(str(inp["thread"]).removeprefix("thread:"), tid)
             return Result(f"No longer following thread:{inp['thread']}.")
+        if name == "hand_back":
+            eid = int(str(inp.get("event_id", "")).lstrip("Ee") or 0)
+            ev = self.store.incoming(eid)
+            if ev is None:
+                raise ToolError(f"no event E{eid}")
+            if ev.get("thread"):
+                self.store.unsubscribe(ev["thread"], tid)
+            reason = str(inp.get("reason", ""))[:300]
+            self.store.verdict(eid, f"W{tid}", "handed back", reason)
+            for cb in self.handback_listeners:
+                cb(task, ev, reason)
+            return Result(f"Handed E{eid} back to the router" + (f" and left thread:{ev['thread']}" if ev.get("thread") else "")
+                          + ". It will be routed again, not to you.")
+        if name == "delegate":
+            if _parent_of(task):
+                raise ToolError("sub-workers can't start sub-workers of their own")
+            if len(self.live_children(tid)) >= MAX_CHILDREN:
+                raise ToolError(f"you already have {MAX_CHILDREN} sub-workers running; wait for one to finish")
+            child = self.submit(str(inp["instructions"]), source=f"task:{tid}", origin=f"task:{tid}",
+                                title=inp.get("title") or None, mode=task.get("mode") or "normal",
+                                machine=task.get("machine") or None, quick=bool(inp.get("quick")))
+            self._emit(tid, "subtask", {"text": f"started sub-worker W{child}: {inp.get('title') or ''}"})
+            return Result(f"Started sub-worker [W{child}]. Its result will arrive as a message; keep working, "
+                          "or end your turn to wait for it.")
+        if name == "github_post":
+            return await self._github_post(inp)
         if name == "discard":
             if task.get("mode") != "silent":
                 raise ToolError("discard is only for background tasks")
@@ -662,7 +767,7 @@ class Agent:
                     if queued:
                         history.append({"role": "user", "content": "\n\n".join(queued)})
                         continue
-                    if self.live_jobs(task_id):  # full duplex: wait for the job's event (or a new message)
+                    if self.live_jobs(task_id) or self.live_children(task_id):  # wait for a job or sub-worker
                         await self._wait_inbox(task_id)
                         history.append({"role": "user", "content": "\n\n".join(self._drain(task_id))})
                         continue

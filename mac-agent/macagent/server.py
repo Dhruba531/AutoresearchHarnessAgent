@@ -326,7 +326,7 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
     # -- triggers -----------------------------------------------------------------------
     def _trigger_out(t: dict) -> dict:
         out = {k: v for k, v in t.items() if k not in {"state"}}
-        out["hook_path"] = f"/api/hooks/{t['id']}" if t["kind"] == "webhook" else None
+        out["hook_path"] = f"/api/hooks/{t['id']}" if t["kind"] in {"webhook", "github"} else None
         return out
 
     @app.get("/api/triggers")
@@ -361,7 +361,13 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
         ip = request.client.host if request.client else "?"
         if not hook_limiter.allow(ip):
             raise HTTPException(429, "Too many requests.")
-        raw = (await request.body())[:20_000]
+        body = await request.body()
+        if request.headers.get("x-github-event"):  # GitHub signs the whole body: verify before anything else
+            if triggers is None or not triggers.github_hook(trigger_id, request.headers.get("x-hub-signature-256"),
+                                                            request.headers["x-github-event"], body[:5_000_000]):
+                raise HTTPException(404, "Unknown hook or wrong signature.")
+            return {"ok": True}
+        raw = body[:20_000]
         try:
             payload: Any = json.loads(raw) if raw else {}
         except ValueError:

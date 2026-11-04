@@ -151,6 +151,13 @@ def classify(name: str, inp: dict, toolset: str | None, settings: Settings) -> t
         return classify_shell(inp.get("command", "")), f"{verb}: {_short(inp.get('command', ''), 200)}"
     if name == "report":
         return "read", f"report: {_short(inp.get('text', ''), 160)}"
+    if name == "github_post":
+        where = "description of" if inp.get("where") == "pr_description" else "comment on"
+        return "send", f"Post a GitHub {where} {inp.get('repo')}#{inp.get('number')}: {_short(inp.get('body', ''), 160)}"
+    if name == "delegate":
+        return "read", f"start a sub-worker: {_short(inp.get('title') or inp.get('instructions', ''), 120)}"
+    if name == "hand_back":
+        return "read", f"hand back {inp.get('event_id')}: {_short(inp.get('reason', ''), 100)}"
     if name in {"read", "subscribe_thread", "unsubscribe_thread", "discard", "job_stop"}:
         return "read", f"{name}: {_short(inp.get('id') or inp.get('thread') or inp.get('reason') or inp.get('job_id') or '', 100)}"
     if name == "applescript":

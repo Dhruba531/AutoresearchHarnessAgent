@@ -38,7 +38,7 @@ from .policy import is_relay_home
 from .store import Store
 
 log = logging.getLogger("relay.triggers")
-KINDS = {"folder": 15, "mail": 120, "calendar": 60, "system": 300, "webhook": 0}  # default poll seconds
+KINDS = {"folder": 15, "mail": 120, "calendar": 60, "system": 300, "webhook": 0, "github": 0}  # default poll seconds
 PARTIAL = (".crdownload", ".download", ".part", ".partial", ".tmp", ".icloud")
 
 
@@ -67,9 +67,50 @@ def describe(t: dict, item: Any) -> tuple[str, str | None, str | None]:
                 (f" at {item['location']}" if item.get("location") else ""), None, f"cal:{item.get('title')}|{item.get('start')}")
     if kind == "system":
         return ("; ".join(f"{k.replace('_', ' ')} {v}" for k, v in item.items()), None, f"system:{t['id']}")
+    if kind == "github":
+        return str(item.get("text", ""))[:4000], item.get("sender"), item.get("thread") or f"gh:{t['id']}"
     text = item.get("text") or item.get("message") or json.dumps(item, ensure_ascii=False, default=str)
     return str(text)[:4000], item.get("from") or item.get("sender"), \
         (f"hook:{t['id']}:{item['thread']}" if item.get("thread") else f"hook:{t['id']}")
+
+
+def github_item(event: str, p: dict) -> dict | None:
+    """One GitHub webhook delivery → an event (text, sender, thread per issue/PR), or None for noise."""
+    repo = (p.get("repository") or {}).get("full_name") or "?"
+    who = "@" + ((p.get("sender") or {}).get("login") or "someone")
+    action = p.get("action") or ""
+    clip = lambda s, n=600: (s or "").strip()[:n]  # noqa: E731
+    issue, pr = p.get("issue") or {}, p.get("pull_request") or {}
+    number = issue.get("number") or pr.get("number")
+    kind = "PR" if pr or issue.get("pull_request") else "issue"
+    thread = f"gh:{repo}#{number}" if number else f"gh:{repo}"
+    meta = {"repo": repo, "number": number, "url": (issue or pr).get("html_url"), "event": event, "action": action}
+    if event == "issues" and action in {"opened", "reopened", "closed", "assigned", "labeled"}:
+        text = f"{repo}: issue #{number} {action} by {who}: {issue.get('title')}\n{clip(issue.get('body')) if action == 'opened' else ''}"
+    elif event == "issue_comment" and action == "created":
+        text = f"{repo}: {who} commented on {kind} #{number} ({issue.get('title')}): {clip((p.get('comment') or {}).get('body'))}"
+    elif event == "pull_request" and action in {"opened", "reopened", "closed", "ready_for_review", "review_requested"}:
+        merged = " (merged)" if action == "closed" and pr.get("merged") else ""
+        text = f"{repo}: PR #{number} {action}{merged} by {who}: {pr.get('title')}\n{clip(pr.get('body')) if action == 'opened' else ''}"
+    elif event == "pull_request_review" and action == "submitted":
+        rv = p.get("review") or {}
+        text = f"{repo}: {who} reviewed PR #{number} ({pr.get('title')}): {rv.get('state')} — {clip(rv.get('body'))}"
+    elif event == "pull_request_review_comment" and action == "created":
+        c = p.get("comment") or {}
+        text = f"{repo}: {who} commented on PR #{number} at {c.get('path')}: {clip(c.get('body'))}"
+    elif event == "workflow_run" and action == "completed" and (p.get("workflow_run") or {}).get("conclusion") == "failure":
+        w = p["workflow_run"]
+        thread = f"gh:{repo}:ci:{w.get('head_branch')}"
+        meta.update(number=None, url=w.get("html_url"))
+        text = f"{repo}: CI failed — {w.get('name')} on {w.get('head_branch')} ({clip(w.get('display_title'), 120)})"
+    elif event == "push" and p.get("commits"):
+        branch = str(p.get("ref", "")).removeprefix("refs/heads/")
+        thread = f"gh:{repo}:push:{branch}"
+        text = f"{repo}: {who} pushed {len(p['commits'])} commit(s) to {branch}: " + "; ".join(
+            clip(c.get("message"), 80) for c in p["commits"][:5])
+    else:
+        return None  # stars, pings, label edits…: not worth an event
+    return {"text": text.strip(), "sender": who, "thread": thread, "_github": meta}
 
 
 class Triggers:
@@ -93,7 +134,7 @@ class Triggers:
         if kind == "calendar":
             config["minutes_before"] = int(config.get("minutes_before") or 15)
         config["interval_s"] = max(5, int(config.get("interval_s") or KINDS[kind] or 0)) if KINDS[kind] else 0
-        secret = "hk_" + secrets.token_urlsafe(24) if kind == "webhook" else None
+        secret = "hk_" + secrets.token_urlsafe(24) if kind in {"webhook", "github"} else None
         cur = self.store.x(
             "INSERT INTO triggers(name,kind,config,instruction,secret,created_at) VALUES(?,?,?,?,?,?)",
             (name.strip()[:80] or kind, kind, json.dumps(config), instruction.strip()[:2000], secret, time.time()),
@@ -126,6 +167,23 @@ class Triggers:
             self.router.submit({"kind": "trigger", "source": f"trigger:{t['id']}", "reply": "all", "sender": sender,
                                 "text": text, "payload": item if isinstance(item, dict) else {"value": item},
                                 "thread": thread, "trigger": meta})
+
+    def github_hook(self, trigger_id: int, signature: str | None, event: str, raw: bytes) -> bool:
+        """GitHub signs each delivery with the trigger's secret (X-Hub-Signature-256); unsigned or wrong: refused."""
+        t = self.store.trigger(trigger_id)
+        if not t or t["kind"] != "github" or not t["enabled"] or not t["secret"] or not signature:
+            return False
+        want = "sha256=" + hmac.new(t["secret"].encode(), raw, "sha256").hexdigest()
+        if not hmac.compare_digest(want, signature):
+            return False
+        try:
+            payload = json.loads(raw or b"{}")
+        except ValueError:
+            return False
+        item = github_item(event, payload)
+        if item is not None:
+            self.fire(t, item)
+        return True  # accepted (a ping or an event Relay ignores still gets 200, so GitHub doesn't retry)
 
     def webhook(self, trigger_id: int, secret: str | None, payload: Any) -> bool:
         t = self.store.trigger(trigger_id)

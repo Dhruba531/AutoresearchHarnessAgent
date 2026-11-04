@@ -26,15 +26,15 @@ reach it and it opens its own.
 
 | § in the note | In Relay |
 | --- | --- |
-| **4 Router and Workers** | `router.py` is the only thing that talks to people. It runs on a light model (Claude Haiku 5.5 or `deepseek-chat`), has no tools that touch a machine, and batches events that arrive together into one call. Workers (`agent.py`) each have an isolated context and the strongest model (Claude Opus 5.5); several run in parallel. Workers never post: they `report()`, and the router writes every reply. |
+| **4 Router and Workers** | `router.py` is the only thing that talks to people. It runs on a light model (Claude Haiku 5.5 or `deepseek-chat`), has no tools that touch a machine, and batches events that arrive together into one call. Workers (`agent.py`) each have an isolated context and the strongest model (Claude Opus 5.5); several run in parallel. Workers never post: they `report()`, and the router writes every reply. A worker can `delegate()` independent parts to up to 3 sub-workers (one level deep); their results come back to it as messages, not to you. |
 | **5 Which events matter** | `filters.py`: code rules first (per-source *admit / candidate / explicit-only / ignore*, sender lists; an @mention or a direct message is admitted at once), then a light model judges candidates against **policies written as prompts** that you edit in Settings. Every event keeps its verdicts (Tasks → Events). |
-| **6 Threads and pass-through** | Events carry a Thread key (email subject chain, Telegram reply chain, one automation's stream). A dispatched worker subscribes to its events' Threads; follow-ups are delivered straight into its inbox by code, with no router decision. Many-to-many: workers can `subscribe_thread` / `unsubscribe_thread`. |
+| **6 Threads and pass-through** | Events carry a Thread key (email subject chain, Telegram reply chain, one automation's stream). A dispatched worker subscribes to its events' Threads; follow-ups are delivered straight into its inbox by code, with no router decision. Many-to-many: workers can `subscribe_thread` / `unsubscribe_thread`, or `hand_back(E…)` an event that isn't theirs: they leave its Thread and the router routes it again, never back to them. |
 | **7 Inline & Spill, Chain of Recall** | `context.py`: every object has an ID (`E12`, `W7`, `O31`, `thread:…`). An event is injected minimal-first, with what's near in space and time inlined as one line each. Long content is cut with a pointer, and tool outputs over 6 KB are spilled to the database. `read(ID)` pages through anything. The router keeps one line per past task, then follows IDs (`read(W7)`) to answer "did that get fixed?". |
 | **8 Acting ahead** | `dispatch_task(mode="silent")`: a speculative background worker. It cannot use the screen or ask you anything. It may prepare (draft a reply), but not take actions that need approval. It either `discard()`s quietly, or reports what it confirmed. The default policies include "silently reproduce and fix" and "draft replies to invitations". |
-| **9 Full duplex, one voice per channel** | `job_start()` returns `Started [J3]` at once. The result arrives later as a message (full output → `read(O…)`), and the worker keeps answering in the meantime; `job_stop()` ends a job. Chat replies are capped at **100 words**. |
-| **10 Compute, state, environments** | Sessions live in SQLite. After a restart, interrupted workers **resume** from their history (up to 3 times). Other machines run `python -m macagent daemon`, which connects out to the server, keeps no session state, and executes host operations. A task targets a machine, and if that machine sleeps, only that task waits. `RELAY_LOCAL_HOST=none` runs the loop on a server with no screen of its own. |
+| **9 Full duplex, one voice per channel** | `job_start()` returns `Started [J3]` at once. The result arrives later as a message (full output → `read(O…)`), and the worker keeps answering in the meantime; `job_stop()` ends a job. Each channel has its own form: chat replies are capped at **100 words**; the router's `outbox` sends a proper **email** (subject, greeting, sign-off) or **GitHub** markdown (## Summary / Details / Next steps, as a comment or PR description), both only after you approve, and a **public post** (≤ 280 characters) comes to you as a draft. |
+| **10 Compute, state, environments** | Sessions live in SQLite. After a restart, interrupted workers **resume** from their history (up to 3 times). Other machines run `python -m macagent daemon`, which connects out to the server, keeps no session state, and executes host operations. A task targets a machine, and if that machine sleeps, only that task waits. `RELAY_LOCAL_HOST=none` runs the loop on a server with no screen of its own. Background jobs still running at a restart are named to the resumed worker so it can start them again. |
 | **11 Watchdog** | `watchdog.py` runs on its own thread and event loop, on a schedule. It checks liveness (event-loop heartbeat, database, model errors, offline machines, failing triggers) and progress (code heuristics for repeated actions or failures and stalls, then a light model judges moving / stuck / drifting). It nudges a stuck worker, and pauses it if it's still stuck after the nudge. Ask it "why did #12 keep retrying?"; it can propose policy, guidance or trigger changes that apply only when you tap Apply. |
-| **12 The whole design** | Tasks → **System** draws the note's "five modules on one page" with live counts: where work happens (each source and its filter mode) → two-stage filter (code admitted, sent to the model, kept, noise dropped) → router (dispatched, ignored; runs no tools) → workers (live, silent, their jobs and threads), with the followed-thread bypass, replies per channel, your Macs, the Watchdog and the session database. Tap a module to open it. One column on a phone, the whiteboard layout on a wide screen. Served by `GET /api/system?hours=`. |
+| **3 The whole design** | Tasks → **System** draws the note's "five modules on one page" with live counts: where work happens (each source and its filter mode) → two-stage filter (code admitted, sent to the model, kept, noise dropped) → router (dispatched, ignored; runs no tools) → workers (live, silent, their jobs and threads), with the followed-thread bypass, replies per channel, your Macs, the Watchdog and the session database. Tap a module to open it. One column on a phone, the whiteboard layout on a wide screen. Served by `GET /api/system?hours=`. |
 | **13 Open problems** | Security is still the big one; see *Limits* below. |
 
 ## What it does
@@ -259,6 +259,7 @@ today and its last error.
 | `RELAY_EFFORT` | `medium` | `low`…`xhigh`; also settable from the phone |
 | `RELAY_PROVIDER` | `anthropic` | `openrouter` / `openai` / `deepseek`: native Mac tools only, no screen clicking (Claude's computer-use toolset needs an Anthropic key) |
 | `GEMINI_API_KEY` (`RELAY_PROVIDER=gemini`) | — | Gemini 3.8 Flash for tasks, 3.5 Flash-Lite for chat: low cost and fast. Native Mac tools, no screen clicking |
+| `GITHUB_TOKEN` | — | a fine-grained token (Issues and Pull requests: write) for posting on GitHub; posts still need your approval |
 | `RELAY_DIRECT_RESULTS` | `1` | a finished task's answer goes to you as the worker wrote it, without a second router call (failures and silent work still go through the router) |
 | `RELAY_PROVIDER=local`, `RELAY_LOCAL_URL` | `http://127.0.0.1:11434/v1` | a model on this Mac through any OpenAI-compatible server (Ollama by default; LM Studio is `http://127.0.0.1:1234/v1`). Free, private, no key; default model `qwen3:8b`, set `RELAY_MODEL` for another. Small local models are noticeably weaker at long multi-step tasks |
 | `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY` | — | for those providers. OpenRouter defaults to `anthropic/claude-opus-5.5` for tasks and `anthropic/claude-haiku-5.5` for chat; set `RELAY_MODEL` / `RELAY_ROUTER_MODEL` to any OpenRouter model id |
@@ -329,6 +330,10 @@ virtual desktop. They cover:
   - Watchdog nudge → pause → proposal → apply;
   - Telegram group mentions and threads;
   - the System map's counts for every module;
+- the rest of the note (`tests/test_note_gaps.py`): per-channel replies (a
+  public draft, an email only after approval, GitHub posts with the token),
+  handing an event back, sub-workers reporting to their parent, lost jobs
+  named after a restart, and signed GitHub webhooks threaded per issue/PR;
 - the router batching a burst into one light-model call with no Mac tools,
   dispatching, reporting back, answering questions but never approvals, and
   its no-model fallback;
@@ -345,15 +350,22 @@ virtual desktop. They cover:
 
 ## Limits and honest notes
 
-- **Not yet run on a real Mac.** The macOS-specific layer (`host/mac.py`
-  CGEvents and `screencapture`, and the AppleScript in `scripts.py`) was
-  written against Apple's APIs but has not been run on a Mac. Everything above
-  it was exercised on the virtual desktop. The JXA scripts parse, but
-  AppleScript can only be checked on macOS. Expect a first-run fix or two;
-  `doctor` and the error messages point at permissions first.
+- **On a real Mac: partly exercised.** Relay runs on a Mac mini (macOS on
+  Apple silicon): installing, the LaunchAgent, Telegram, the phone app over
+  Wi-Fi and Tailscale/Funnel, the live screen with taps and typing, and tasks
+  such as opening apps and updating software have worked there. Not every
+  AppleScript path in `scripts.py` (Mail, Calendar, Notes, Reminders) has been
+  run yet; `doctor` and the error messages point at permissions first. The
+  test suite runs on a virtual desktop with a mock model.
+- **Not in Relay, by choice:** the note's Watchdog "fixes what it can" with a
+  full toolset; Relay's nudges, pauses and proposes, and changes nothing
+  without your tap. Compute is one process with SQLite rather than elastic
+  stateless containers: sessions survive restarts, background jobs don't.
+- **Event sources:** phone app, Telegram (chats and groups), folders, mail,
+  calendar, Mac status, webhooks and GitHub (signed webhooks: issues, PRs,
+  reviews, comments, CI failures; it needs a public address, so Tailscale
+  Funnel). There is no Slack or Teams source.
 - Only the **main display** of each machine is captured and controlled.
-- Background jobs live in memory. After a restart, workers resume, but a job
-  they had started must be started again, and the worker is told so.
 - **The design note's open security problem applies.** The loop and every
   paired machine trust each other, so a compromised server or a successful
   prompt injection reaches every connected machine. Pair only machines you
