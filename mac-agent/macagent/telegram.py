@@ -100,7 +100,16 @@ class TelegramBot:
     async def say(self, chat_id: int, text: str, **kw) -> dict:
         return await self.call("sendMessage", chat_id=chat_id, text=text[:4000], **kw)
 
+    COMMANDS = [("model", "Which model runs; tap to switch"), ("status", "What's running and waiting for you"),
+                ("tasks", "Recent tasks"), ("screen", "A screenshot of the Mac"), ("stop", "Stop the running task"),
+                ("help", "What I can do")]
+
     async def run(self) -> None:
+        try:  # the "/" menu in Telegram lists these, so nobody has to remember them
+            await self.call("setMyCommands", commands=[{"command": c, "description": d} for c, d in self.COMMANDS
+                                                       if c != "model" or self.models is not None])
+        except Exception as exc:
+            log.warning("telegram setMyCommands: %s", exc)
         while True:
             try:
                 updates = await self.call("getUpdates", offset=self.offset, timeout=30,

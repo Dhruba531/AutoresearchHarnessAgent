@@ -199,3 +199,31 @@ async def test_telegram_model_command(tmp_path, clean_env):
                                          "message": {"chat": {"id": 5}, "message_id": 7}}})
     assert settings.provider == "gemini"
     assert any(n == "editMessageText" and "Now using Gemini" in b["text"] for n, b in calls)
+
+
+@pytest.mark.asyncio
+async def test_telegram_lists_its_commands(tmp_path, clean_env):
+    import httpx
+
+    from macagent.telegram import TelegramBot
+
+    settings, store, m = make(tmp_path)
+    calls = []
+
+    def handler(req):
+        name = req.url.path.rsplit("/", 1)[-1]
+        calls.append((name, json.loads(req.content or b"{}")))
+        if name == "getUpdates":
+            raise httpx.ConnectError("stop")
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    bot = TelegramBot("123:abc", Agent(settings, store, FakeHost(), lambda: None), store,
+                      transport=httpx.MockTransport(handler), models=m)
+    task = asyncio.create_task(bot.run())
+    for _ in range(100):
+        if any(n == "getUpdates" for n, _ in calls):
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    cmds = next(b for n, b in calls if n == "setMyCommands")["commands"]
+    assert cmds[0] == {"command": "model", "description": "Which model runs; tap to switch"}
