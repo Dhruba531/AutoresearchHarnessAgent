@@ -13,6 +13,7 @@ const S = {
   chat: [], routerBusy: false, chatDraft: "", triggers: null,
   seg: "tasks", incoming: [], wd: null, wdDraft: "", policies: null, rules: null, machineCode: null, policyDraft: "",
   screenMachine: null, sys: null, sysHours: 24,
+  models: null, mOpen: null, mSel: {}, mSheet: false, mTest: {}, keyDraft: {},
   trig: { kind: "folder", name: "", instruction: "", path: "~/Downloads", pattern: "*", query: "", minutes: 15, battery: "", disk: "" },
   ws: null, connected: false, retry: 0,
   frame: null, frameErr: "", mode: "click", mods: new Set(), lastTap: null, takeover: false,
@@ -93,6 +94,7 @@ function onMessage(m) {
     return;
   }
   if (m.type === "machine") { refreshState(); return; }
+  if (m.type === "models") { refreshState(); if (S.models) loadModels(); return; }
   if (m.type === "watchdog" || m.type === "watchdog_chat") { if (S.view === "tasks" && S.seg === "watchdog") loadWatchdog(); return; }
   if (m.type === "screen_owner") {
     S.state.screen_owner = m.task_id; S.state.screen_busy = m.task_id != null; render(); return;
@@ -184,6 +186,7 @@ function shell() {
       ${tab("chat", "💬", "Chat", pending)}${tab("tasks", "◉", "Tasks", (S.state.running || []).length)}${tab("screen", "▢", "Screen")}${tab("settings", "⚙", "Settings")}
     </nav>
     ${S.toast ? `<div class="toast" role="status">${esc(S.toast)}</div>` : ""}
+    ${modelSheet()}
     ${S.lightbox ? `<div class="lightbox" data-act="close-lightbox"><img src="${esc(S.lightbox)}" alt="screenshot"></div>` : ""}`;
 }
 
@@ -482,7 +485,9 @@ function viewChat() {
     if (m.role === "task") return taskChip(m.task_id);
     return `<div class="bubble agent">${esc(m.text)}${m.task_id ? taskChip(m.task_id) : ""}</div>`;
   }).join("");
+  const am = S.state.active_model;
   return `${header("Relay")}
+    ${am ? `<button class="modelchip" data-act="m-sheet">⚡ ${esc(am.label)} · ${esc(shortModel(am.model))} <span class="muted">▾</span></button>` : ""}
     ${!S.chat.length ? `<div class="card"><h2>What should your Mac do?</h2>
         <p class="muted small" style="margin:4px 0 12px">Talk to Relay here. It hands real work to workers on your Mac, runs several at once,
         and asks you before anything that sends, deletes or changes things.</p>
@@ -678,13 +683,7 @@ function viewSettings() {
     <div class="card"><div class="label">When Relay asks first</div>
       ${Object.entries(POLICY_TEXT).map(([k, [n, d]]) => `<button class="policy-opt ${st.policy === k ? "on" : ""}" style="width:100%;text-align:left" data-act="policy" data-id="${k}">
         <b>${n}</b><span class="muted small">${d}</span></button>`).join("")}</div>
-    <div class="card"><div class="label">Models</div>
-      <p class="small" style="margin:8px 0 0">Router (chat, light): <b>${esc(S.state.router?.model || "—")}</b></p>
-      <div class="row spread" style="margin-top:8px"><span class="small">Workers (tasks, ×${S.state.workers}): <b>${esc(st.model)}</b></span>
-        <select class="field" id="effort" style="max-width:130px" data-change="effort">
-          ${["low", "medium", "high", "xhigh"].map((e) => `<option ${st.effort === e ? "selected" : ""}>${e}</option>`).join("")}</select></div>
-      ${st.can_see_screen ? "" : `<p class="muted small">This model can't see the screen, so Relay uses Mac tools only (no clicking).</p>`}
-      <p class="muted small">Spent today: ${money(S.state.spend_today)} of ${money(st.daily_cap_usd)} daily cap.</p></div>
+    ${viewModels()}
     <div class="card"><div class="row spread"><div class="label">Paired devices</div>
       <button class="btn small" data-act="invite">Pair another</button></div>
       ${S.inviteCode ? `<p>Code for the new device: <b style="font-family:var(--mono);letter-spacing:.15em">${esc(S.inviteCode)}</b> <span class="muted small">(10 min)</span></p>` : ""}
@@ -734,10 +733,82 @@ async function go(view, id) {
   render(); scrollTo(0, 0);
 }
 
+// ---------------------------------------------------------------- models and keys
+const shortModel = (m) => String(m || "").split("/").pop();
+
+function modelSelect(p, role) {
+  const cur = (S.mSel[p.id] || {})[role] || (role === "main" ? p.model : p.router_model);
+  const opts = [...new Set([...p.models, cur])];
+  return `<select class="field" data-change="m-model" data-id="${esc(p.id)}" data-role="${role}">
+    ${opts.map((m) => `<option value="${esc(m)}" ${m === cur ? "selected" : ""}>${esc(shortModel(m))}</option>`).join("")}
+    <option value="__other">Other model id…</option></select>`;
+}
+
+function modelRow(p, i, all) {
+  const open = S.mOpen === p.id, t = S.mTest[p.id];
+  const state = !p.has_key ? `<span class="muted small">${p.needs_key ? "add key" : "not running"}</span>`
+    : p.active ? `<span class="pill done">in use</span>`
+    : p.resting ? `<span class="pill blocked">resting</span>`
+    : `<span class="muted small">${p.today_calls ? money(p.today_usd) + " today" : "ready"}</span>`;
+  const body = !open ? "" : `<div class="mbody">
+    <p class="muted small" style="margin:0 0 10px">${esc(p.note)}</p>
+    ${p.needs_key ? (p.has_key ? `<div class="row spread small"><span>Key <b class="mono">••••${esc(p.key_last4)}</b></span>
+        <span class="row" style="gap:6px"><button class="btn small" data-act="m-test" data-id="${esc(p.id)}">Test</button>
+        ${p.active ? "" : `<button class="btn small bad" data-act="m-remove" data-id="${esc(p.id)}">Remove</button>`}</span></div>` : "")
+      + `<form data-form="m-key" data-id="${esc(p.id)}" class="row" style="margin-top:8px">
+        <input class="field grow" type="password" autocomplete="off" id="key-${esc(p.id)}" value="${esc(S.keyDraft[p.id] || "")}" placeholder="${p.has_key ? "Replace key" : "Paste key " + esc(p.hint)}">
+        <button class="btn">${p.has_key ? "Replace" : "Save"}</button></form>
+        ${p.has_key ? "" : `<p class="small" style="margin:6px 0 0"><a href="${esc(p.get_key)}" target="_blank" rel="noopener">Get a ${esc(p.label)} key →</a></p>`}`
+      : `<p class="small" style="margin:0">No key needed. ${p.offline ? `Ollama isn't running on the Mac: <a href="${esc(p.get_key)}" target="_blank" rel="noopener">install it</a> and open it.` : "Ollama is running on the Mac."}</p>`}
+    ${t ? `<p class="small" style="margin:8px 0 0;color:${t.ok ? "var(--ok)" : "var(--bad)"}">${esc(t.message)}${
+      t.credits ? ` · <b>${money(t.credits.remaining_usd)}</b> credit left` : ""}</p>` : ""}
+    <div class="mgrid"><label class="small">Tasks (main)${modelSelect(p, "main")}</label>
+      <label class="small">Chat &amp; quick (fast)${modelSelect(p, "fast")}</label></div>
+    ${p.today_calls ? `<p class="muted small" style="margin:8px 0 0">Today: ${money(p.today_usd)} · ${p.today_calls} calls</p>` : ""}
+    ${p.last_error ? `<p class="small" style="margin:6px 0 0;color:var(--bad)">Last error: ${esc(p.last_error.slice(0, 140))}</p>` : ""}
+    ${p.resting ? `<p class="muted small" style="margin:4px 0 0">Resting after that error; Relay tries it again later.</p>` : ""}
+    <div class="btn-row" style="margin-top:10px">
+      <button class="btn small" data-act="m-up" data-id="${esc(p.id)}" ${i === 0 ? "disabled" : ""} aria-label="Move up">↑</button>
+      <button class="btn small" data-act="m-down" data-id="${esc(p.id)}" ${i === all.length - 1 ? "disabled" : ""} aria-label="Move down">↓</button>
+      <button class="btn primary grow" data-act="m-use" data-id="${esc(p.id)}" ${p.has_key ? "" : "disabled"}>${p.active ? "Save models" : "Use " + esc(p.label)}</button></div></div>`;
+  return `<div class="mrow ${p.active ? "on" : ""}"><button class="mhead" data-act="m-open" data-id="${esc(p.id)}">
+    <span class="dot ${p.has_key ? (p.resting ? "busy" : "on") : ""}"></span>
+    <span class="grow"><b>${esc(p.label)}</b>${p.active ? `<span class="muted small"> · ${esc(shortModel(p.model))}</span>` : ""}</span>
+    ${state}<span class="muted">${open ? "▴" : "▾"}</span></button>${body}</div>`;
+}
+
+function viewModels() {
+  const m = S.models, st = S.state.settings;
+  if (!m) return `<div class="card"><div class="label">Models</div><p class="muted small">Loading…</p></div>`;
+  return `<div class="card"><div class="label">Models</div>
+    <p class="small" style="margin:6px 0 2px">Using <b>${esc(m.active.label)}</b>: tasks on <b>${esc(shortModel(m.active.model))}</b>,
+      chat on <b>${esc(shortModel(m.active.router_model))}</b>.</p>
+    <p class="muted small" style="margin:0 0 10px">Spent today: ${money(S.state.spend_today)} of ${money(st.daily_cap_usd)} daily cap.
+      ${st.can_see_screen ? "" : " This provider can't click the screen; Relay uses Mac tools."}</p>
+    <div class="mlist">${m.providers.map(modelRow).join("")}</div>
+    <label class="row spread" style="margin-top:12px;gap:12px"><span class="small"><b>Switch automatically</b><br>
+      <span class="muted">When a key runs out of credit or hits its rate limit, use the next one in this order (↑ ↓) and tell you.</span></span>
+      <input type="checkbox" class="toggle" data-change="m-auto" ${m.auto ? "checked" : ""}></label></div>`;
+}
+
+function modelSheet() {
+  if (!S.mSheet) return "";
+  const rows = S.models ? S.models.providers.filter((p) => p.has_key) : [];
+  return `<div class="sheet-bg" data-act="m-sheet-close"></div><div class="sheet" role="dialog" aria-label="Choose a model">
+    <div class="row spread"><b>Model</b><button class="btn small" data-act="m-sheet-close">Done</button></div>
+    ${!S.models ? `<p class="muted small">Loading…</p>` : rows.map((p) => `<button class="mhead sheet-row ${p.active ? "on" : ""}" data-act="m-sheet-use" data-id="${esc(p.id)}">
+      <span class="dot ${p.resting ? "busy" : "on"}"></span><span class="grow"><b>${esc(p.label)}</b>
+      <span class="muted small"> · ${esc(shortModel(p.model))}</span></span>${p.active ? "✓" : p.today_calls ? `<span class="muted small">${money(p.today_usd)}</span>` : ""}</button>`).join("")}
+    <button class="btn" style="width:100%;margin-top:10px" data-act="m-sheet-settings">Keys &amp; models…</button></div>`;
+}
+
+async function loadModels() { try { S.models = await api("/api/models"); render(); } catch {} }
+
 async function loadSettings() {
   try {
-    [S.devices, S.memories, S.triggers, S.policies, S.rules, S.wd] = await Promise.all([api("/api/devices"), api("/api/memories"),
-      api("/api/triggers"), api("/api/policies"), api("/api/filter/rules").catch(() => null), api("/api/watchdog").catch(() => null)]);
+    [S.devices, S.memories, S.triggers, S.policies, S.rules, S.wd, S.models] = await Promise.all([api("/api/devices"), api("/api/memories"),
+      api("/api/triggers"), api("/api/policies"), api("/api/filter/rules").catch(() => null), api("/api/watchdog").catch(() => null),
+      api("/api/models").catch(() => null)]);
     render();
   } catch (e) { toast(e.message); }
 }
@@ -773,6 +844,32 @@ $app.addEventListener("click", async (e) => {
   try {
     switch (act) {
       case "tab": return go(id);
+      case "m-open": S.mOpen = S.mOpen === id ? null : id; render(); return;
+      case "m-sheet": S.mSheet = true; render(); return loadModels();
+      case "m-sheet-close": S.mSheet = false; render(); return;
+      case "m-sheet-settings": S.mSheet = false; S.mOpen = S.state.active_model?.provider; return go("settings");
+      case "m-sheet-use": {
+        S.models = await api("/api/models/use", { method: "POST", body: { provider: id } });
+        S.mSheet = false; await refreshState(); return toast(`Now using ${S.models.active.label}`);
+      }
+      case "m-use": {
+        const sel = S.mSel[id] || {};
+        S.models = await api("/api/models/use", { method: "POST", body: { provider: id, model: sel.main, router_model: sel.fast } });
+        delete S.mSel[id]; await refreshState(); return toast(`Using ${S.models.active.label}`);
+      }
+      case "m-test": {
+        toast("Testing…");
+        S.mTest[id] = await api(`/api/models/keys/${id}/test`, { method: "POST" }); render(); return;
+      }
+      case "m-remove":
+        if (!confirm("Remove this key from the Mac?")) return;
+        S.models = await api(`/api/models/keys/${id}`, { method: "DELETE" }); delete S.mTest[id]; render(); return toast("Key removed");
+      case "m-up": case "m-down": {
+        const order = [...S.models.order], i = order.indexOf(id), j = i + (act === "m-up" ? -1 : 1);
+        if (j < 0 || j >= order.length) return;
+        [order[i], order[j]] = [order[j], order[i]];
+        S.models = await api("/api/models/fallback", { method: "PUT", body: { order } }); render(); return;
+      }
       case "open": return go("task", n);
       case "suggest": S.draft = el.dataset.text; render(); document.getElementById("draft")?.focus(); return;
       case "suggest-chat": S.chatDraft = el.dataset.text; render(); document.getElementById("chatdraft")?.focus(); return;
@@ -839,6 +936,19 @@ $app.addEventListener("change", async (e) => {
     try { S.state.settings = { ...S.state.settings, ...(await api("/api/settings", { method: "PUT", body: { effort: e.target.value } })) }; toast("Saved"); }
     catch (err) { toast(err.message); }
   }
+  if (e.target.dataset.change === "m-model") {
+    const pid = e.target.dataset.id, role = e.target.dataset.role;
+    let v = e.target.value;
+    if (v === "__other") {
+      v = (prompt("Model id (as the provider names it, e.g. google/gemini-3.8-flash on OpenRouter)") || "").trim();
+      if (!v) { render(); return; }
+    }
+    S.mSel[pid] = { ...(S.mSel[pid] || {}), [role]: v }; render();
+  }
+  if (e.target.dataset.change === "m-auto") {
+    try { S.models = await api("/api/models/fallback", { method: "PUT", body: { auto: e.target.checked } }); toast("Saved"); }
+    catch (err) { toast(err.message); }
+  }
   if (e.target.id === "run-at") S.runAt = e.target.value;
   if (e.target.id === "trig-kind") { S.trig.kind = e.target.value; render(); }
   if (e.target.dataset.change === "rule" || e.target.dataset.change === "ignore") {
@@ -857,6 +967,7 @@ $app.addEventListener("input", (e) => {
   if (t.id === "chatdraft") S.chatDraft = t.value;
   if (t.id === "wddraft") S.wdDraft = t.value;
   if (t.id === "policy-draft") S.policyDraft = t.value;
+  if (t.id.startsWith("key-")) S.keyDraft[t.id.slice(4)] = t.value;
   const tf = { "trig-name": "name", "trig-instruction": "instruction", "trig-path": "path", "trig-pattern": "pattern",
     "trig-query": "query", "trig-minutes": "minutes", "trig-battery": "battery", "trig-disk": "disk" }[t.id];
   if (tf) S.trig[tf] = t.value;
@@ -896,6 +1007,13 @@ $app.addEventListener("submit", async (e) => {
       S.wdDraft = ""; S.wd.chat.push({ kind: "chat_user", data: { text } }); render();
       await api("/api/watchdog/chat", { method: "POST", body: { text } });
       loadWatchdog();
+    } else if (form === "m-key") {
+      const pid = e.target.dataset.id, input = document.getElementById(`key-${pid}`), key = input.value.trim();
+      if (!key) return;
+      input.value = ""; delete S.keyDraft[pid];
+      const r = await api(`/api/models/keys/${pid}`, { method: "PUT", body: { key } });
+      S.models = r; S.mTest[pid] = r.test; render();
+      toast(r.test.ok ? "Key saved and working" : "Key saved, but the test failed");
     } else if (form === "policy") {
       if (!S.policyDraft.trim()) return;
       await api("/api/policies", { method: "POST", body: { text: S.policyDraft.trim() } });

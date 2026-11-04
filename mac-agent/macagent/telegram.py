@@ -11,6 +11,15 @@ obeyed; everything else is ignored.
   /tasks          → recent tasks
   /screen         → a screenshot of the Mac
   /stop           → cancel the running task
+  /model          → see which model runs, and switch with one tap; /model gemini (or nano, opus, local…)
+                    switches by name, and so does just asking ("use gemini")
+  /mac            → battery, disk, uptime, the app in front, model and spend
+  /get name       → send yourself a file from the Mac (or send me a file: it lands in Downloads)
+  /clip · /copy   → read the Mac's clipboard, or put text on it
+  /open Safari    → open an app · /lock → lock the screen
+  /spend · /cap 2 → today's cost per provider · set the daily cap
+  /speed          → where the time went on recent tasks (model, Mac, waiting)
+  /app            → a one-time link that opens the full Relay app (inside Telegram, or any browser)
   approvals       → Approve / Deny buttons; questions → reply with the answer
 
 In a group (pair it by sending /pair CODE there), Relay behaves like the
@@ -32,18 +41,20 @@ import time
 import httpx
 
 from .agent import Agent
-from .auth import _h  # pairing codes are stored hashed
+from .auth import _h, new_pairing_code  # pairing codes are stored hashed
+from .tgcommands import Commands
 from .store import Store
 
 log = logging.getLogger("relay.telegram")
 
 
-class TelegramBot:
+class TelegramBot(Commands):
     """Both an inbound source and a router channel ("telegram:<chat id>")."""
 
     name = "telegram"
 
-    def __init__(self, token: str, agent: Agent, store: Store, transport=None, router=None):
+    def __init__(self, token: str, agent: Agent, store: Store, transport=None, router=None, models=None,
+                 app_url=None, public: bool = False):
         self.base = f"https://api.telegram.org/bot{token}"
         self.agent, self.store = agent, store
         self.http = httpx.AsyncClient(timeout=60, transport=transport)
@@ -51,8 +62,13 @@ class TelegramBot:
         self.task_messages: dict[tuple[int, int], int] = {}  # (chat, message) → task id
         self.question_messages: dict[tuple[int, int], int] = {}  # (chat, message) → approval id
         self.router = router
+        self.models = models  # ModelManager, for /model
+        # for /app: a fixed address, or a function asked each time (Tailscale may start after Relay)
+        self._app_url, self.public = app_url, public
         self.me: dict | None = None
         self.roots: dict[tuple[int, int], int] = {}  # (chat, message) → root message of its reply chain
+        self.typing: dict[int, asyncio.Task] = {}
+        self.file_choices: dict[int, list[str]] = {}  # chat → files offered by /get  # chat → "typing…" kept alive until Relay answers
 
     # -- plumbing --------------------------------------------------------------------
     async def call(self, method: str, **params) -> dict:
@@ -61,6 +77,32 @@ class TelegramBot:
         if not data.get("ok"):
             raise RuntimeError(f"telegram {method}: {data.get('description')}")
         return data["result"]
+
+    def show_typing(self, chat: int, limit_s: float = 180) -> None:
+        """Telegram clears "typing…" after ~5 s; keep it up while Relay works for this chat."""
+        t = self.typing.get(chat)
+        if t and not t.done():
+            return
+
+        async def loop() -> None:
+            end = time.monotonic() + limit_s
+            while time.monotonic() < end:
+                try:
+                    await self.call("sendChatAction", chat_id=chat, action="typing")
+                except Exception:
+                    return
+                await asyncio.sleep(4.5)
+
+        self.typing[chat] = asyncio.create_task(loop())
+
+    def stop_typing(self, chat: int) -> None:
+        t = self.typing.pop(chat, None)
+        if t:
+            t.cancel()
+        # still working on something this chat asked for: keep showing it
+        origin = f"telegram:{chat}"
+        if any((self.store.task(tid) or {}).get("origin") == origin for tid in self.agent.running):
+            self.show_typing(chat)
 
     def chats(self) -> list[int]:
         return [r["chat_id"] for r in self.store.all("SELECT chat_id FROM telegram_chats")]
@@ -71,7 +113,20 @@ class TelegramBot:
     async def say(self, chat_id: int, text: str, **kw) -> dict:
         return await self.call("sendMessage", chat_id=chat_id, text=text[:4000], **kw)
 
+    COMMANDS = [("app", "Open the full Relay app"), ("model", "Which model runs; tap to switch"),
+                ("mac", "Battery, disk, uptime, the app in front"), ("get", "Send me a file: /get name"),
+                ("clip", "What's on the Mac's clipboard"), ("copy", "Put text on the clipboard: /copy text"),
+                ("open", "Open an app: /open Safari"), ("lock", "Lock the Mac's screen"),
+                ("spend", "Today's cost; /cap 2 sets the daily cap"), ("speed", "Where the time went on recent tasks"), ("status", "What's running and waiting for you"),
+                ("tasks", "Recent tasks"), ("screen", "A screenshot of the Mac"), ("stop", "Stop the running task"),
+                ("help", "What I can do")]
+
     async def run(self) -> None:
+        try:  # the "/" menu in Telegram lists these, so nobody has to remember them
+            await self.call("setMyCommands", commands=[{"command": c, "description": d} for c, d in self.COMMANDS
+                                                       if c != "model" or self.models is not None])
+        except Exception as exc:
+            log.warning("telegram setMyCommands: %s", exc)
         while True:
             try:
                 updates = await self.call("getUpdates", offset=self.offset, timeout=30,
@@ -97,6 +152,10 @@ class TelegramBot:
         chat = (msg.get("chat") or {}).get("id")
         group = (msg.get("chat") or {}).get("type") in {"group", "supergroup"}
         text = (msg.get("text") or "").strip()
+        if chat and not text and (msg.get("document") or msg.get("photo")):
+            if self.authorized(chat) and not group:
+                await self.receive_file(chat, msg)
+            return
         if not chat or not text:
             return
         if text.startswith("/pair"):
@@ -114,6 +173,23 @@ class TelegramBot:
             return await self.say(chat, f"Added to task #{tid}.")
         if text in {"/start", "/help"}:
             return await self.say(chat, __doc__.split("\n\n", 2)[2])
+        if text == "/app":
+            if group:  # a sign-in link in a group would let every member in
+                return await self.say(chat, "Send /app to me in a private chat: the link signs a browser in.")
+            return await self.app_link(chat)
+        if (text == "/model" or text.startswith("/model ")) and self.models is not None:
+            name = text[len("/model"):].strip()
+            if not name:
+                return await self.model_menu(chat)
+            hit = self.models.resolve(name)
+            if hit is None:
+                return await self.say(chat, f"I don't know a model called “{name}” that you have a key for. "
+                                            "Send /model to see the choices.")
+            self.models.use(hit[0], hit[1])
+            self.agent.bus.publish({"type": "models"})
+            a = self.models.status()["active"]
+            return await self.say(chat, f"Now using {a['label']}: tasks on {a['model'].split('/')[-1]}, "
+                                        f"chat on {a['router_model'].split('/')[-1]}.")
         if text == "/status":
             return await self.say(chat, self.status_text())
         if text == "/tasks":
@@ -126,12 +202,14 @@ class TelegramBot:
             return await self.say(chat, f"Stopping {len(running)} task(s)." if running else "Nothing is running.")
         if text == "/screen":
             return await self.send_screen(chat)
+        if text.startswith("/") and await self.command(chat, text, group):
+            return
         if self.router is not None:
             name = (msg.get("from") or {}).get("first_name") or "user"
             if group:
                 return await self.on_group(chat, msg, text, name)
+            self.show_typing(chat)
             self.router.human(f"telegram:{chat}", text, sender=name)
-            await self.call("sendChatAction", chat_id=chat, action="typing")
             return
         tid = self.agent.submit(text, source="telegram", origin=f"telegram:{chat}")
         sent = await self.say(chat, f"On it — task #{tid}. Reply to this message to add details.")
@@ -151,6 +229,8 @@ class TelegramBot:
         self.roots[(chat, msg.get("message_id"))] = root
         if username:
             text = re.sub(rf"@{re.escape(username)}\b", "", text, flags=re.I).strip() or text
+        if mentioned or to_bot:
+            self.show_typing(chat)
         self.router.human(f"telegram:{chat}", text, sender=sender, source=f"telegram-group:{chat}",
                           explicit=mentioned or to_bot, thread=f"tg:{chat}:{root}")
 
@@ -165,10 +245,54 @@ class TelegramBot:
         self.store.x("INSERT OR REPLACE INTO telegram_chats(chat_id,name,created_at) VALUES(?,?,?)", (chat, name, time.time()))
         await self.say(chat, "Paired. Send me anything you want your Mac to do.")
 
+    async def app_link(self, chat: int) -> dict:
+        """A fresh single-use pairing link to the full app. Only paired chats get here."""
+        url = await asyncio.to_thread(self._app_url) if callable(self._app_url) else self._app_url
+        url = (url or "").rstrip("/") or None
+        if not url:
+            return await self.say(chat, "The full app away from home needs Tailscale: install it on the Mac and your "
+                                        "phone, sign in on both, and run the install line again. At home, open the "
+                                        "app at the Wi-Fi address the installer printed.")
+        code = new_pairing_code(self.store)
+        link = f"{url}/pair?code={code}"
+        where = ("any browser" if self.public else "Telegram, or a browser on a device with Tailscale")
+        return await self.say(chat, f"Open the full Relay app in {where}. The link signs in once and expires in 10 "
+                                    f"minutes:\n{link}\n\nOn a shared computer use a private window, and tap "
+                                    f"Settings → Unpair when you're done. If the page doesn't load, run on the "
+                                    f"Mac: tailscale serve --bg {self.agent.settings.port}",
+                              reply_markup={"inline_keyboard": [[{"text": "📱 Open Relay", "web_app": {"url": link}}]]},
+                              disable_web_page_preview=True)
+
+    async def model_menu(self, chat: int) -> dict:
+        st = self.models.status()
+        a = st["active"]
+        rows = [[{"text": ("✓ " if p["active"] else "") + f"{p['label']} · {p['model'].split('/')[-1]}"
+                          + (f"  ({'$%.3f' % p['today_usd']} today)" if p["today_calls"] else ""),
+                  "callback_data": f"m:{p['id']}"}] for p in st["providers"] if p["has_key"]]
+        text = (f"Using {a['label']}: tasks on {a['model'].split('/')[-1]}, chat on {a['router_model'].split('/')[-1]}.\n"
+                f"Tap to switch. Add keys and pick models in the app (Settings → Models).")
+        return await self.say(chat, text, reply_markup={"inline_keyboard": rows})
+
     async def on_button(self, q: dict) -> None:
         chat = ((q.get("message") or {}).get("chat") or {}).get("id")
         if not chat or not self.authorized(chat):
             return await self.call("answerCallbackQuery", callback_query_id=q["id"])
+        data = q.get("data", "")
+        if data.startswith("f:"):
+            note = await self.on_file_choice(chat, data[2:])
+            return await self.call("answerCallbackQuery", callback_query_id=q["id"], text=note[:190])
+        if data.startswith("m:") and self.models is not None:
+            try:
+                self.models.use(data[2:])
+                self.agent.bus.publish({"type": "models"})
+                a = self.models.status()["active"]
+                note = f"Now using {a['label']} ({a['model'].split('/')[-1]})."
+            except (ValueError, KeyError) as exc:
+                note = str(exc) or "Unknown provider."
+            await self.call("answerCallbackQuery", callback_query_id=q["id"], text=note[:190])
+            if q.get("message"):
+                await self.call("editMessageText", chat_id=chat, message_id=q["message"]["message_id"], text=note)
+            return
         try:
             kind, aid, verdict = q.get("data", "").split(":")
         except ValueError:
@@ -217,6 +341,7 @@ class TelegramBot:
         if not self.authorized(chat):
             return
         sent = await self.say(chat, text)
+        self.stop_typing(chat)
         if task_id:
             self.task_messages[(chat, sent["message_id"])] = task_id
 

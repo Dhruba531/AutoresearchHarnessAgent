@@ -166,10 +166,13 @@ def next_run(run_at: float, repeat: str) -> float:
 
 
 class Agent:
-    def __init__(self, settings: Settings, store: Store, host: Host | MachineRegistry, adapter_factory):
+    def __init__(self, settings: Settings, store: Store, host: Host | MachineRegistry, adapter_factory,
+                 light_factory=None):
         self.settings, self.store = settings, store
         self.machines = host if isinstance(host, MachineRegistry) else MachineRegistry(store, host)
         self.adapter_factory = adapter_factory
+        self.light_factory = light_factory  # the fast model, for quick tasks
+        self.timing: dict[int, dict] = {}  # task → time spent in the model and in Mac actions (for /speed)
         self.bus = Bus()
         self.notifiers: list[Notifier] = []
         self.listeners: list = []          # task ended → router
@@ -259,8 +262,22 @@ class Agent:
             except asyncio.TimeoutError:
                 pass
 
+    def _record_timing(self, tid: int) -> None:
+        """Keep where the time went for the last tasks, for /speed."""
+        tm, task = self.timing.pop(tid, None), self.store.task(tid)
+        if not tm or not task or not task.get("ended_at"):
+            return
+        rec = {"id": tid, "title": task["title"], "status": task["status"], "model": tm["model"],
+               "calls": tm["calls"], "model_s": round(tm["model_s"], 2), "tool_s": round(tm["tool_s"], 2),
+               "total_s": round(task["ended_at"] - task["created_at"], 2),
+               "wait_s": round((task.get("started_at") or task["created_at"]) - task["created_at"], 2),
+               "at": task["ended_at"]}
+        recent = [r for r in self.store.get("timings", []) if r.get("id") != tid][-19:]
+        self.store.put("timings", recent + [rec])
+
     def _finished(self, tid: int, fut: asyncio.Task) -> None:
         self.running.pop(tid, None)
+        self._record_timing(tid)
         self._release_screen(tid)
         if not fut.cancelled() and fut.exception() is not None:  # never let one task kill the pool
             log.error("task %s crashed", tid, exc_info=fut.exception())
@@ -293,7 +310,8 @@ class Agent:
 
     # -- public API ----------------------------------------------------------------------
     def submit(self, prompt: str, *, source: str = "app", run_at: float | None = None, repeat: str | None = None,
-               origin: str | None = None, title: str | None = None, mode: str = "normal", machine: str | None = None) -> int:
+               origin: str | None = None, title: str | None = None, mode: str = "normal", machine: str | None = None,
+               quick: bool = False) -> int:
         """Queue a worker task. `origin` is the channel to report back to (e.g. "web", "telegram:42")."""
         if repeat and repeat not in REPEATS:
             raise ValueError(f"repeat must be one of {', '.join(REPEATS)}")
@@ -304,7 +322,8 @@ class Agent:
         if repeat and not run_at:
             run_at = time.time()
         tid = self.store.create_task(prompt, source=source, run_at=run_at, repeat=repeat, origin=origin, title=title,
-                                     provider=self.settings.provider, model=self.settings.model, mode=mode,
+                                     provider=self.settings.provider, mode=mode,
+                                     model=self.settings.router_model if quick and self.light_factory else self.settings.model,
                                      machine=machine, guidance=self.store.get("worker_guidance"))
         self._emit(tid, "created", {"prompt": prompt, "source": source, "run_at": run_at, "repeat": repeat, "mode": mode,
                                     "machine": machine})
@@ -590,7 +609,9 @@ class Agent:
             if queued:
                 history.append({"role": "user", "content": "\n\n".join(queued)})
             try:
-                adapter = self.adapter_factory()
+                quick = (self.light_factory is not None and task.get("model") == self.settings.router_model
+                         and self.settings.router_model != self.settings.model)
+                adapter = self.light_factory() if quick else self.adapter_factory()
             except LLMError as exc:
                 self._status(task_id, "failed", error=str(exc), ended_at=time.time())
                 return
@@ -612,7 +633,12 @@ class Agent:
                     self._status(task_id, "blocked", error=f"Daily spend cap ${self.settings.daily_cap_usd:.2f} reached "
                                  f"(${spent:.2f} today).")
                     break
+                t_model = time.monotonic()
                 turn: Turn = await adapter.step(system, history, tools)
+                tm = self.timing.setdefault(task_id, {"model_s": 0.0, "calls": 0, "tool_s": 0.0, "model": ""})
+                tm["model_s"] += time.monotonic() - t_model
+                tm["calls"] += 1
+                tm["model"] = turn.model or tm["model"]
                 steps += 1
                 self.store.add_spend(task_id, turn.cost_usd)
                 history.append({"role": "assistant", "content": turn.content})
@@ -667,6 +693,8 @@ class Agent:
                     content = res.content if isinstance(res.content, list) else [{"type": "text", "text": res.content or "OK"}]
                     results.append({"type": "tool_result", "tool_use_id": b["id"], "content": content,
                                     **({"is_error": True} if res.is_error else {}), **echo})
+                    tm = self.timing.setdefault(task_id, {"model_s": 0.0, "calls": 0, "tool_s": 0.0, "model": ""})
+                    tm["tool_s"] += time.monotonic() - t0
                     tier, summary = classify(b["name"], b.get("input") or {}, b.get("toolset_name"), self.settings)
                     preview = res.content if isinstance(res.content, str) else ""
                     self._emit(task_id, "tool", {

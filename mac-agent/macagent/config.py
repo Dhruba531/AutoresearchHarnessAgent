@@ -46,6 +46,9 @@ def load_env_file() -> None:
 load_env_file()
 
 
+# Default for provider "local" (Ollama): small enough for a 16 GB Mac mini, and it can call tools.
+LOCAL_MODEL = "qwen3:8b"
+
 @dataclass
 class Settings:
     home: Path = field(default_factory=lambda: Path(os.environ.get("RELAY_HOME", "~/.relay")).expanduser())
@@ -60,11 +63,17 @@ class Settings:
     anthropic_api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", ""))
     deepseek_api_key: str = field(default_factory=lambda: os.environ.get("DEEPSEEK_API_KEY", ""))
     openai_api_key: str = field(default_factory=lambda: os.environ.get("OPENAI_API_KEY", ""))
+    openrouter_api_key: str = field(default_factory=lambda: os.environ.get("OPENROUTER_API_KEY", ""))
+    gemini_api_key: str = field(default_factory=lambda: os.environ.get("GEMINI_API_KEY", ""))
+    # provider "local": any OpenAI-compatible server on this Mac (Ollama, LM Studio, llama.cpp, vLLM)
+    local_base_url: str = field(default_factory=lambda: os.environ.get("RELAY_LOCAL_URL", "http://127.0.0.1:11434/v1"))
 
     # Layers: a light router model talks to you and dispatches; heavy workers run tasks.
     router_model: str = field(default_factory=lambda: os.environ.get("RELAY_ROUTER_MODEL", ""))
     router_batch_ms: int = field(default_factory=lambda: _int("RELAY_ROUTER_BATCH_MS", 1200))
     router_max_wait_ms: int = field(default_factory=lambda: _int("RELAY_ROUTER_MAX_WAIT_MS", 4000))
+    # a finished task's answer goes to you as written, without a second router call to rephrase it
+    direct_results: bool = field(default_factory=lambda: _bool("RELAY_DIRECT_RESULTS", True))
     max_workers: int = field(default_factory=lambda: _int("RELAY_WORKERS", 3))
     # This server's own machine: "auto" (this Mac, or a virtual one with --fake-host) or "none" (a cloud loop
     # that only drives machines through daemons).
@@ -97,11 +106,20 @@ class Settings:
             pass
         if not self.router_model:
             self.router_model = {"anthropic": "claude-haiku-5-5", "deepseek": "deepseek-chat",
-                                 "openai": "gpt-4.1-mini"}.get(self.provider, "claude-haiku-5-5")
+                                 "openai": "gpt-5.4-nano", "openrouter": "anthropic/claude-haiku-5.5",
+                                 "gemini": "gemini-3.5-flash-lite", "local": LOCAL_MODEL}.get(
+                self.provider, "claude-haiku-5-5")
         if not self.model:
-            self.model = {"anthropic": "claude-opus-5-5", "deepseek": "deepseek-chat", "openai": "gpt-4.1"}.get(
-                self.provider, "claude-opus-5-5"
-            )
+            self.model = {"anthropic": "claude-opus-5-5", "deepseek": "deepseek-chat", "openai": "gpt-5.4-mini",
+                          "openrouter": "anthropic/claude-opus-5.5", "gemini": "gemini-3.8-flash",
+                          "local": LOCAL_MODEL}.get(
+                self.provider, "claude-opus-5-5")
+
+    def api_key(self) -> str:
+        """The key for the configured provider."""
+        return {"anthropic": self.anthropic_api_key, "deepseek": self.deepseek_api_key,
+                "openai": self.openai_api_key, "openrouter": self.openrouter_api_key, "gemini": self.gemini_api_key,
+                "local": os.environ.get("RELAY_LOCAL_KEY", "local")}.get(self.provider, "")
 
     @property
     def db_path(self) -> Path:

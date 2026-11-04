@@ -20,7 +20,9 @@ OpenAICompatAdapter serves DeepSeek and OpenAI with the native tools only.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -37,6 +39,9 @@ PRICES = {
     "claude-haiku-5-5": (0.10, 0.50, 0.01), "claude-fable-5-1": (10.0, 50.0, 0.25), "claude-opus-5": (5.0, 25.0, 0.50),
     "deepseek-chat": (0.28, 0.42, 0.028), "deepseek-reasoner": (0.28, 0.42, 0.028),
     "gpt-4.1": (2.0, 8.0, 0.5), "gpt-4.1-mini": (0.4, 1.6, 0.1),
+    "gpt-5.4-mini": (0.75, 4.50, 0.075), "gpt-5.4-nano": (0.20, 1.25, 0.02),
+    # Gemini: 3.8 Flash at its standard rate (the lower introductory rate ends 2026-12-31), so the cap errs safe
+    "gemini-3.8-flash": (1.50, 7.50, 0.15), "gemini-3.5-flash-lite": (0.30, 2.50, 0.03),
 }
 
 FEATURES = {
@@ -48,6 +53,15 @@ FEATURES = {
 
 class LLMError(RuntimeError):
     pass
+
+
+def _claude_history(history: list[dict]) -> list[dict]:
+    """Drop fields other providers attach to tool calls (Gemini's thought signatures), which Claude rejects —
+    a task may have started on another provider before failing over."""
+    if not any(isinstance(m.get("content"), list) and any("extra_content" in b for b in m["content"]) for m in history):
+        return history
+    return [{**m, "content": [{k: v for k, v in b.items() if k != "extra_content"} for b in m["content"]]}
+            if isinstance(m.get("content"), list) else m for m in history]
 
 
 @dataclass
@@ -64,8 +78,16 @@ class Turn:
     meta: dict = field(default_factory=dict)
 
 
+def _price(model: str) -> tuple[float, float, float]:
+    """Price by id; OpenRouter ids ("anthropic/claude-opus-5.5") map onto the native ones."""
+    if model in PRICES:
+        return PRICES[model]
+    bare = model.split("/", 1)[-1].split(":", 1)[0]
+    return PRICES.get(bare) or PRICES.get(bare.replace(".", "-")) or (10.0, 50.0, 1.0)
+
+
 def cost(model: str, tin: int, tout: int, cread: int = 0, cwrite: int = 0) -> float:
-    pin, pout, pread = PRICES.get(model, (10.0, 50.0, 1.0))
+    pin, pout, pread = _price(model)
     return (tin * pin + tout * pout + cread * pread + cwrite * pin * 1.25) / 1_000_000
 
 
@@ -86,7 +108,7 @@ class ClaudeAdapter:
             "model": self.model,
             "max_tokens": self.max_tokens,
             "system": system,
-            "messages": history,
+            "messages": _claude_history(history),
             "tools": tools + ([COMPUTER_TOOLSET] if self.can_see_screen else []),
             "output_config": {"effort": self.effort},
             "cache_control": {"type": "ephemeral"},
@@ -141,13 +163,16 @@ class ClaudeAdapter:
 
 
 class OpenAICompatAdapter:
-    """DeepSeek / OpenAI chat completions with function calling (no screen)."""
+    """DeepSeek / OpenAI / OpenRouter chat completions with function calling (no screen)."""
 
     can_see_screen = False
 
-    def __init__(self, provider: str, api_key: str, model: str, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, provider: str, api_key: str, model: str, transport: httpx.AsyncBaseTransport | None = None,
+                 base_url: str | None = None):
         self.provider, self.model, self.key = provider, model, api_key
-        self.base = "https://api.deepseek.com" if provider == "deepseek" else "https://api.openai.com/v1"
+        self.base = (base_url or BASE_URLS.get(provider, BASE_URLS["openai"])).rstrip("/")
+        m = model.lower()
+        self.reasoning = "low" if (provider in {"gemini", "openrouter"} or m.startswith(("gpt-5", "o3", "o4"))) else ""
         self.transport = transport
 
     @staticmethod
@@ -161,7 +186,8 @@ class OpenAICompatAdapter:
             if msg["role"] == "assistant":
                 text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
                 calls = [{"id": b["id"], "type": "function",
-                          "function": {"name": b["name"], "arguments": json.dumps(b.get("input", {}))}}
+                          "function": {"name": b["name"], "arguments": json.dumps(b.get("input", {}))},
+                          **({"extra_content": b["extra_content"]} if b.get("extra_content") else {})}
                          for b in content if b.get("type") == "tool_use"]
                 m: dict[str, Any] = {"role": "assistant", "content": text or None}
                 if calls:
@@ -183,37 +209,76 @@ class OpenAICompatAdapter:
         return out
 
     async def step(self, system: str, history: list[dict], tools: list[dict]) -> Turn:
-        body = {
+        if self.provider == "local" and "qwen3" in self.model.lower():
+            system += "\n/no_think"  # Qwen3 thinks at length by default; a personal agent needs quick answers
+        body: dict[str, Any] = {
             "model": self.model,
             "messages": self._messages(system, history),
             "tools": [{"type": "function", "function": {"name": t["name"], "description": t["description"],
                                                         "parameters": t["input_schema"]}} for t in tools],
-            "max_tokens": 8192,
         }
+        # GPT-5-era models take max_completion_tokens; everyone else max_tokens
+        body["max_completion_tokens" if self.provider == "openai" else "max_tokens"] = 8192
+        if self.reasoning:  # low: answer fast instead of thinking long
+            if self.provider == "openrouter":
+                body["reasoning"] = {"effort": self.reasoning}  # OpenRouter's one setting for every model
+            else:
+                body["reasoning_effort"] = self.reasoning
         try:
             async with httpx.AsyncClient(timeout=600, transport=self.transport) as http:
-                r = await http.post(f"{self.base}/chat/completions", json=body,
-                                    headers={"Authorization": f"Bearer {self.key}"})
+                headers = {"Authorization": f"Bearer {self.key}"}
+                if self.provider == "openrouter":
+                    headers["X-Title"] = "Relay"
+                r = await http.post(f"{self.base}/chat/completions", json=body, headers=headers)
         except httpx.HTTPError as exc:
             raise LLMError(f"Could not reach {self.provider}: {exc}") from exc
+        if r.status_code == 400 and "reasoning" in r.text and self.reasoning:
+            self.reasoning = ""  # this model has no reasoning control: stop sending it
+            return await self.step(system.removesuffix("\n/no_think"), history, tools)
         if r.status_code != 200:
             raise LLMError(f"{self.provider} error {r.status_code}: {r.text[:300]}")
         data = r.json()
         msg = (data.get("choices") or [{}])[0].get("message", {})
         content: list[dict] = []
-        if msg.get("content"):
-            content.append({"type": "text", "text": msg["content"]})
+        text = msg.get("content") or ""
+        if "<think>" in text:  # local reasoning models (Qwen3, DeepSeek-R1) put their thinking inline
+            text = re.sub(r"<think>.*?(</think>|$)", "", text, flags=re.S).strip()
+        if text:
+            content.append({"type": "text", "text": text})
         for call in msg.get("tool_calls") or []:
             try:
                 args = json.loads(call["function"].get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {"_unparsed": call["function"].get("arguments")}
-            content.append({"type": "tool_use", "id": call["id"], "name": call["function"]["name"], "input": args})
+            block = {"type": "tool_use", "id": call.get("id") or f"call_{len(content)}", "name": call["function"]["name"],
+                     "input": args}
+            if call.get("extra_content"):  # Gemini 3's thought signature: must go back with the next turn
+                block["extra_content"] = call["extra_content"]
+            content.append(block)
         usage = data.get("usage") or {}
         tin, tout = int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
         hit = int(usage.get("prompt_cache_hit_tokens", 0))
+        # OpenRouter reports what the call actually cost; otherwise price it from the table
+        if self.provider == "local":
+            usd = 0.0  # runs on this Mac: no bill, and it must not eat the daily cap
+        elif isinstance(usage.get("cost"), (int, float)):
+            usd = usage["cost"]
+        else:
+            usd = cost(self.model, tin - hit, tout, hit)
         return Turn(content, "tool_use" if msg.get("tool_calls") else "end_turn", self.model, tin - hit, tout, hit, 0,
-                    cost(self.model, tin - hit, tout, hit))
+                    float(usd))
+
+
+BASE_URLS = {"deepseek": "https://api.deepseek.com", "openai": "https://api.openai.com/v1",
+             "openrouter": "https://openrouter.ai/api/v1",
+             "gemini": "https://generativelanguage.googleapis.com/v1beta/openai"}
+
+
+def _compat_key(settings) -> str:
+    key = settings.api_key()
+    if not key:
+        raise LLMError(f"Set {settings.provider.upper()}_API_KEY")
+    return key
 
 
 def make_router_adapter(settings) -> ClaudeAdapter | OpenAICompatAdapter:
@@ -221,19 +286,31 @@ def make_router_adapter(settings) -> ClaudeAdapter | OpenAICompatAdapter:
     if settings.provider == "anthropic":
         return ClaudeAdapter(settings.anthropic_api_key, settings.router_model, "low", screen=False, features=set(),
                              max_tokens=4000)
-    key = settings.deepseek_api_key if settings.provider == "deepseek" else settings.openai_api_key
-    if not key:
-        raise LLMError(f"Set {'DEEPSEEK' if settings.provider == 'deepseek' else 'OPENAI'}_API_KEY")
-    return OpenAICompatAdapter(settings.provider, key, settings.router_model)
+    return OpenAICompatAdapter(settings.provider, _compat_key(settings), settings.router_model,
+                               base_url=settings.local_base_url if settings.provider == "local" else None)
 
 
 def make_adapter(settings) -> ClaudeAdapter | OpenAICompatAdapter:
     if settings.provider == "anthropic":
         return ClaudeAdapter(settings.anthropic_api_key, settings.model, settings.effort)
-    key = settings.deepseek_api_key if settings.provider == "deepseek" else settings.openai_api_key
-    if not key:
-        raise LLMError(f"Set {'DEEPSEEK' if settings.provider == 'deepseek' else 'OPENAI'}_API_KEY")
-    return OpenAICompatAdapter(settings.provider, key, settings.model)
+    return OpenAICompatAdapter(settings.provider, _compat_key(settings), settings.model,
+                               base_url=settings.local_base_url if settings.provider == "local" else None)
 
 
-__all__ = ["ClaudeAdapter", "OpenAICompatAdapter", "Turn", "LLMError", "make_adapter", "cost", "time"]
+async def keep_warm(settings, every_s: float = 240, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    """Ollama unloads an idle model after 5 minutes, and reloading it costs seconds on every first message.
+    Ask it to keep Relay's models loaded (an empty generate loads without generating)."""
+    if settings.provider != "local" or ":11434" not in settings.local_base_url:
+        return
+    native = settings.local_base_url.rstrip("/").removesuffix("/v1")
+    async with httpx.AsyncClient(timeout=120, transport=transport) as http:
+        while True:
+            for m in dict.fromkeys([settings.model, settings.router_model]):
+                try:
+                    await http.post(f"{native}/api/generate", json={"model": m, "keep_alive": "30m"})
+                except httpx.HTTPError:
+                    pass  # Ollama not running yet; doctor explains
+            await asyncio.sleep(every_s)
+
+
+__all__ = ["keep_warm", "ClaudeAdapter", "OpenAICompatAdapter", "Turn", "LLMError", "make_adapter", "cost", "time"]

@@ -85,6 +85,21 @@ class ProposalIn(BaseModel):
     approve: bool
 
 
+class KeyIn(BaseModel):
+    key: str = Field(min_length=1, max_length=400)
+
+
+class UseModelIn(BaseModel):
+    provider: str
+    model: str | None = Field(default=None, max_length=200)
+    router_model: str | None = Field(default=None, max_length=200)
+
+
+class FallbackIn(BaseModel):
+    order: list[str] | None = None
+    auto: bool | None = None
+
+
 class ChatIn(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
 
@@ -111,7 +126,7 @@ def token_of(request: Request) -> str | None:
 
 
 def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=None, *, router=None,
-               triggers=None, watchdog=None) -> FastAPI:
+               triggers=None, watchdog=None, models=None) -> FastAPI:
     limiter = RateLimiter(limit=8, window_s=60)  # pairing
     hook_limiter = RateLimiter(limit=60, window_s=60)
 
@@ -122,6 +137,8 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
             settings.policy = saved["policy"]
         if saved.get("effort"):
             settings.effort = saved["effort"]
+        if isinstance(saved.get("daily_cap_usd"), (int, float)):
+            settings.daily_cap_usd = float(saved["daily_cap_usd"])  # set from Telegram with /cap
         agent.start()
         jobs = list(extra_startup() if extra_startup else [])
         if router is not None:
@@ -131,6 +148,16 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
         tasks = [asyncio.create_task(c) for c in jobs]
         if watchdog is not None and watchdog.interval_s > 0:
             watchdog.start_thread(asyncio.get_running_loop())
+        if models is not None:
+            loop = asyncio.get_running_loop()
+
+            async def announce(note: str) -> None:
+                agent.bus.publish({"type": "models"})
+                if router is not None:
+                    await router.send("all", note)
+
+            # failover can happen on the Watchdog's thread too: always announce on the main loop
+            models.listeners.append(lambda note: loop.call_soon_threadsafe(lambda: loop.create_task(announce(note))))
         yield
         for t in tasks:
             t.cancel()
@@ -163,6 +190,9 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
                          "daily_cap_usd": settings.daily_cap_usd, "telegram": bool(settings.telegram_token),
                          "ntfy": bool(settings.ntfy_topic)},
             "spend_today": round(store.spend_since(local_midnight()), 4),
+            "active_model": models.status()["active"] if models is not None else
+            {"provider": settings.provider, "label": settings.provider, "model": settings.model,
+             "router_model": settings.router_model},
             "version": __version__,
         }
 
@@ -447,6 +477,60 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
             if host is not None:
                 agent.machines.detach(name, host)
                 agent.bus.publish({"type": "machine", "name": name, "online": False})
+
+    # -- models and keys (Settings → Models) ----------------------------------------------
+    def need_models():
+        if models is None:
+            raise HTTPException(404, "Model switching is not enabled on this server.")
+        return models
+
+    @app.get("/api/models")
+    def models_status(_d: dict = Depends(device)) -> dict:
+        return need_models().status()
+
+    @app.post("/api/models/use")
+    def models_use(body: UseModelIn, _d: dict = Depends(device)) -> dict:
+        m = need_models()
+        try:
+            m.use(body.provider, body.model or None, body.router_model or None)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        agent.bus.publish({"type": "models"})
+        return m.status()
+
+    @app.put("/api/models/keys/{provider}")
+    async def models_key(provider: str, body: KeyIn, _d: dict = Depends(device)) -> dict:
+        m = need_models()
+        try:
+            m.set_key(provider, body.key)
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(400, str(exc) or "Unknown provider.") from exc
+        ok, msg = await m.test_key(provider)
+        return {**m.status(), "test": {"ok": ok, "message": msg}}
+
+    @app.delete("/api/models/keys/{provider}")
+    def models_key_remove(provider: str, _d: dict = Depends(device)) -> dict:
+        m = need_models()
+        if provider not in m.status()["order"]:
+            raise HTTPException(404, "Unknown provider.")
+        if provider == settings.provider:
+            raise HTTPException(409, "Switch to another provider before removing the key in use.")
+        m.remove_key(provider)
+        return m.status()
+
+    @app.post("/api/models/keys/{provider}/test")
+    async def models_key_test(provider: str, _d: dict = Depends(device)) -> dict:
+        m = need_models()
+        if provider not in m.status()["order"]:
+            raise HTTPException(404, "Unknown provider.")
+        ok, msg = await m.test_key(provider)
+        return {"ok": ok, "message": msg, "credits": await m.credits(provider)}
+
+    @app.put("/api/models/fallback")
+    def models_fallback(body: FallbackIn, _d: dict = Depends(device)) -> dict:
+        m = need_models()
+        m.set_fallback(body.order, body.auto)
+        return m.status()
 
     # -- the one-page system map ---------------------------------------------------------
     @app.get("/api/system")

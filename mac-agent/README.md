@@ -84,6 +84,23 @@ reach it and it opens its own.
 Requirements: macOS 13 or later, Python 3.10 or later (`brew install python`),
 and an Anthropic API key.
 
+**One line.** In Terminal on the Mac mini:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dhruba531/AutoresearchHarnessAgent/claude/festive-fermi-gb3xr7/mac-agent/install.sh | bash
+```
+
+It downloads Relay into `~/Relay` (and a private Python 3.12 via `uv` if the
+Mac has no Python 3.10+), installs it, asks for your API key once — Anthropic,
+OpenRouter, Gemini, OpenAI or DeepSeek, or `local` for a free model on the Mac via Ollama
+(hidden as you paste it, saved in `~/.relay/env` with owner-only access),
+checks permissions, starts Relay at login, shares it over Tailscale if you're
+signed in, and prints a pairing code and QR code for your phone. Run the same
+line again to update. To skip the key prompt, put `ANTHROPIC_API_KEY=sk-ant-…`
+(or `OPENROUTER_API_KEY=…`, `OPENAI_API_KEY=…`) before `bash`. It also offers to
+connect a Telegram bot (token from @BotFather) so you can use Relay from anywhere
+without opening anything on the Mac. The steps below do the same thing by hand.
+
 ```bash
 git clone https://github.com/Dhruba531/AutoresearchHarnessAgent.git
 ```
@@ -152,6 +169,19 @@ Paired devices can be removed in Settings.
 and open `http://<mac-ip>:8765`. This is plain HTTP, so use it only on a
 network you trust, and never forward the port to the internet.
 
+### Any browser, anywhere (optional, Tailscale Funnel)
+
+With Tailscale set up, the installer asks whether to also open Relay to **any
+browser** (say, a university computer with nothing installed). If you say yes
+it runs `tailscale funnel --bg 8765`, which gives Relay a public HTTPS address.
+A browser still can't get in without a one-time pairing code: send **`/app`** to
+your Telegram bot for a link that signs in once and expires in 10 minutes (it
+also opens the app inside Telegram). `/app` only answers your paired private
+chat, never a group. On a shared computer use a private window and tap
+Settings → Unpair when you're done. Turn it off with `tailscale funnel reset`.
+This is a door from the internet to an agent that controls your Mac: leave it
+off if you don't need it.
+
 ### Add your other Macs (optional)
 
 In Settings → Machines, tap **Add a machine** and run the command it shows on
@@ -200,6 +230,26 @@ internet. Only paired chats are obeyed.
 app. Pick an unguessable topic, because anyone who knows it can read the
 notifications.
 
+## Models and keys (from your phone)
+
+Settings → **Models** keeps a key for each provider you use (Gemini, DeepSeek,
+OpenAI, OpenRouter, Anthropic) or the local model, and lets you pick which one
+runs: a **main** model for tasks and a **fast** model for chat and quick tasks.
+Pick from the list, or choose "Other model id…" to type any id the provider
+offers (e.g. any OpenRouter model). **Test** checks a key without spending
+anything; for OpenRouter it also shows the credit left. The ⚡ chip at the top
+of Chat (or `/model` in Telegram) switches with one tap.
+
+Keys are written to `~/.relay/env` (owner-only) and never shown again: the app
+sees the last four characters. Your choice is saved, so it survives restarts.
+
+**Switch automatically** (on by default): when a call fails because a key ran
+out of credit, was rejected, or hit a rate limit, Relay rests that provider (2
+minutes for a rate limit, an hour otherwise), retries the same step on the next
+provider in your order (↑ ↓) that has a key, and tells you on every channel.
+Ordinary errors (a bad request) don't switch. Each provider shows what it cost
+today and its last error.
+
 ## Configuration (`~/.relay/env` or environment)
 
 | Variable | Default | Meaning |
@@ -207,8 +257,11 @@ notifications.
 | `ANTHROPIC_API_KEY` | — | Claude: required for screen control |
 | `RELAY_MODEL` | `claude-opus-5-5` | or `claude-sonnet-5-5` (faster and cheaper) |
 | `RELAY_EFFORT` | `medium` | `low`…`xhigh`; also settable from the phone |
-| `RELAY_PROVIDER` | `anthropic` | `deepseek` / `openai`: native tools only, no screen (these models can't see screenshots) |
-| `DEEPSEEK_API_KEY`, `OPENAI_API_KEY` | — | for those providers |
+| `RELAY_PROVIDER` | `anthropic` | `openrouter` / `openai` / `deepseek`: native Mac tools only, no screen clicking (Claude's computer-use toolset needs an Anthropic key) |
+| `GEMINI_API_KEY` (`RELAY_PROVIDER=gemini`) | — | Gemini 3.8 Flash for tasks, 3.5 Flash-Lite for chat: low cost and fast. Native Mac tools, no screen clicking |
+| `RELAY_DIRECT_RESULTS` | `1` | a finished task's answer goes to you as the worker wrote it, without a second router call (failures and silent work still go through the router) |
+| `RELAY_PROVIDER=local`, `RELAY_LOCAL_URL` | `http://127.0.0.1:11434/v1` | a model on this Mac through any OpenAI-compatible server (Ollama by default; LM Studio is `http://127.0.0.1:1234/v1`). Free, private, no key; default model `qwen3:8b`, set `RELAY_MODEL` for another. Small local models are noticeably weaker at long multi-step tasks |
+| `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY` | — | for those providers. OpenRouter defaults to `anthropic/claude-opus-5.5` for tasks and `anthropic/claude-haiku-5.5` for chat; set `RELAY_MODEL` / `RELAY_ROUTER_MODEL` to any OpenRouter model id |
 | `RELAY_ROUTER_MODEL` | `claude-haiku-5-5` | the light routing model (`deepseek-chat` with DeepSeek) |
 | `RELAY_WORKERS` | `3` | tasks that run at once (screen work still takes turns) |
 | `RELAY_ROUTER_BATCH_MS`, `RELAY_ROUTER_MAX_WAIT_MS` | `1200`, `4000` | how long the router gathers a batch |

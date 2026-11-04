@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
+import re
 import shutil
 import socket
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 from .config import Settings
@@ -25,18 +28,46 @@ def lan_ip() -> str | None:
         return None
 
 
-def tailscale_name() -> str | None:
-    exe = shutil.which("tailscale") or "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
-    if not os.path.exists(exe):
-        return None
-    try:
-        import json
+TAILSCALE_PATHS = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/usr/local/bin/tailscale",
+                   "/opt/homebrew/bin/tailscale"]
 
-        out = subprocess.run([exe, "status", "--json"], capture_output=True, text=True, timeout=5).stdout
-        name = json.loads(out).get("Self", {}).get("DNSName", "").rstrip(".")
-        return name or None
-    except Exception:
+
+def tailscale_exe() -> str | None:
+    """The Tailscale command line. A LaunchAgent's PATH is short, so look in the usual places too."""
+    for c in [shutil.which("tailscale"), *TAILSCALE_PATHS]:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
+def tailscale_name() -> str | None:
+    """This Mac's Tailscale name (dhrubas-mac-mini.tail1234.ts.net), or None. Says why in the log."""
+    import json
+
+    exe = tailscale_exe()
+    if exe is None:
+        logging.getLogger("relay").info("tailscale: not installed")
         return None
+    for args in (["status", "--json"], ["serve", "status"]):
+        try:
+            r = subprocess.run([exe, *args], capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logging.getLogger("relay").warning("tailscale %s: %s", " ".join(args), exc)
+            continue
+        out = r.stdout or ""
+        if args[0] == "status" and "{" in out:
+            try:  # a version warning may come before the JSON
+                name = json.loads(out[out.index("{"):]).get("Self", {}).get("DNSName", "").rstrip(".")
+                if name:
+                    return name
+            except ValueError:
+                pass
+        m = re.search(r"https://([a-z0-9-]+(?:\.[a-z0-9-]+)*\.ts\.net)", out)
+        if m:
+            return m.group(1)
+        logging.getLogger("relay").warning("tailscale %s gave no name (exit %s): %s", " ".join(args), r.returncode,
+                                           (r.stderr or out).strip()[:200])
+    return None
 
 
 def print_qr(url: str) -> None:
@@ -113,13 +144,49 @@ def cmd_doctor(settings: Settings) -> int:
                            capture_output=True, text=True, timeout=20)
         line(r.returncode == 0, "Automation of System Events",
              "Approve the macOS prompt, or System Settings → Privacy & Security → Automation.")
-        line(subprocess.run(["pmset", "-g"], capture_output=True).returncode == 0, "pmset available")
-    key = {"anthropic": settings.anthropic_api_key, "deepseek": settings.deepseek_api_key,
-           "openai": settings.openai_api_key}.get(settings.provider)
-    line(bool(key), f"API key for {settings.provider}", f"Add it to {settings.home / 'env'} (chmod 600).")
+        # Comes back by itself after the Mac turns on: awake, restarts after a power cut, logs in, starts Relay.
+        pm = subprocess.run(["pmset", "-g"], capture_output=True, text=True).stdout
+
+        def pmval(key: str) -> int | None:
+            m = re.search(rf"^\s*{key}\s+(\d+)", pm, re.M)
+            return int(m.group(1)) if m else None
+
+        line(pmval("sleep") == 0, "the Mac never sleeps on its own",
+             "System Settings → Energy → Prevent automatic sleeping (or run the installer again and say yes).")
+        restart = pmval("autorestart")
+        line(None if restart is None else restart == 1, "it starts again after a power cut",
+             "System Settings → Energy → Start up automatically after a power failure.")
+        agent_on = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/dev.relay.agent"],
+                                  capture_output=True).returncode == 0
+        line(agent_on, "Relay starts by itself at login",
+             "python -m macagent install-launchagent, and allow python under System Settings → General → "
+             "Login Items → Allow in the Background.")
+        auto = subprocess.run(["defaults", "read", "/Library/Preferences/com.apple.loginwindow", "autoLoginUser"],
+                              capture_output=True, text=True).returncode == 0
+        vault = "is On" in subprocess.run(["fdesetup", "status"], capture_output=True, text=True).stdout
+        line(True if auto else None, "it logs in by itself after a restart",
+             "FileVault is on, so macOS asks for your password once after every restart; Relay starts as soon as "
+             "you log in. (Turning FileVault off allows automatic login, but anyone with the Mac can then use it.)"
+             if vault else "System Settings → Users & Groups → Automatically log in as → your account.")
+    if settings.provider == "local":
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(settings.local_base_url.rstrip("/") + "/models", timeout=5) as r:
+                names = [m.get("id") for m in json.load(r).get("data", [])]
+            line(True, f"local model server at {settings.local_base_url}")
+            line(settings.model in names, f"model {settings.model} is downloaded",
+                 f"ollama pull {settings.model}   (or set RELAY_MODEL to one of: {', '.join(names[:6]) or 'none'})")
+        except Exception:
+            line(False, f"local model server at {settings.local_base_url}",
+                 "Install Ollama from https://ollama.com/download and open it (or start LM Studio's server).")
+    else:
+        line(bool(settings.api_key()), f"API key for {settings.provider}", f"Add it to {settings.home / 'env'} (chmod 600).")
     line(settings.can_see_screen, f"model {settings.model} can see the screen",
-         "Only Claude models drive the screen; with DeepSeek/OpenAI Relay uses the native tools only.")
-    line(tailscale_name() is not None or None, "Tailscale (for secure access from anywhere)",
+         "Only Claude through an Anthropic key drives the screen; with Gemini, DeepSeek, OpenAI, OpenRouter or a "
+         "local model Relay uses the native Mac tools only.")
+    ts = tailscale_name()
+    line(ts is not None or None, f"Tailscale (for secure access from anywhere){': https://' + ts if ts else ''}",
          "Install Tailscale on the Mac and phone, then `tailscale serve --bg 8765`.")
     return 0 if ok else 1
 
@@ -162,14 +229,35 @@ def cmd_install_launchagent(settings: Settings) -> None:
         and keep API keys in {settings.home / 'env'}."""))
 
 
+def boot_time() -> float | None:
+    """When the Mac last started (kern.boottime), or None if unknown."""
+    try:
+        out = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, timeout=5).stdout
+        m = re.search(r"sec\s*=\s*(\d+)", out)
+        return float(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
+async def announce_restart(router, *, within_s: float = 900, delay_s: float = 8, boot=boot_time) -> bool:
+    """After the Mac itself restarted (a power cut, an update), tell the owner Relay is back."""
+    started = boot()
+    if started is None or time.time() - started > within_s:
+        return False  # only Relay restarted (an update): nothing worth a message
+    await asyncio.sleep(delay_s)  # let the network and Telegram come up
+    when = time.strftime("%H:%M", time.localtime(started))
+    await router.send("all", f"Your Mac restarted at {when} (a power cut or an update) and Relay is back online.")
+    return True
+
+
 def cmd_serve(settings: Settings) -> None:
     import uvicorn
 
     from .agent import Agent
     from .filters import Filter
     from .host import make_host
-    from .llm import make_adapter, make_router_adapter
     from .machines import MachineRegistry
+    from .models import FailoverAdapter, ModelManager
     from .notify import Ntfy
     from .router import Router, WebChannel
     from .server import create_app
@@ -181,12 +269,15 @@ def cmd_serve(settings: Settings) -> None:
     store = Store(str(settings.db_path))
     host = None if settings.local_host == "none" else make_host(settings.fake_host, settings.screen_max_edge)
     machines = MachineRegistry(store, host)  # this Mac (if any) + daemons on other machines
-    light = lambda: make_router_adapter(settings)  # noqa: E731
+    # Which provider and models run is chosen in the app (Settings → Models); on a spent key, fail over.
+    models = ModelManager(settings, store)
+    models.apply_saved()
+    light = lambda: FailoverAdapter(models, "fast")  # noqa: E731
     # Worker layer: strongest model, isolated context per task, parallel, a screen lease per machine.
-    agent = Agent(settings, store, machines, lambda: make_adapter(settings))
+    agent = Agent(settings, store, machines, lambda: FailoverAdapter(models, "main"), light_factory=light)
     # Event triggers → two-stage filter (code, then policies on a light model) → router.
     triggers = Triggers(store, host, settings) if host else None
-    router = Router(settings, store, agent, light, triggers, Filter(store, light))
+    router = Router(settings, store, agent, light, triggers, Filter(store, light), models=models)
     if triggers:
         triggers.router = router
     # The Watchdog runs on its own thread and loop, outside the main system.
@@ -200,7 +291,12 @@ def cmd_serve(settings: Settings) -> None:
     if settings.telegram_token:
         from .telegram import TelegramBot
 
-        bot = TelegramBot(settings.telegram_token, agent, store, router=router)
+        def app_url() -> str | None:  # asked on every /app: Tailscale may come up after Relay does
+            ts = tailscale_name()
+            return os.environ.get("RELAY_PUBLIC_URL") or (f"https://{ts}" if ts else None)
+
+        bot = TelegramBot(settings.telegram_token, agent, store, router=router, models=models, app_url=app_url,
+                          public=os.environ.get("RELAY_PUBLIC") == "1")
         agent.notifiers.append(bot)
         router.add_channel(bot)
 
@@ -209,10 +305,13 @@ def cmd_serve(settings: Settings) -> None:
         # Keep the Mac awake (not the display) while Relay runs, so tasks and phone access keep working.
         caffeinate = subprocess.Popen(["caffeinate", "-is", "-w", str(os.getpid())])
 
-    def background():
-        return [bot.run()] if bot else []
+    from .llm import keep_warm
 
-    app = create_app(settings, store, agent, background, router=router, triggers=triggers, watchdog=watchdog)
+    def background():
+        return ([bot.run()] if bot else []) + [keep_warm(settings), announce_restart(router)]
+
+    app = create_app(settings, store, agent, background, router=router, triggers=triggers, watchdog=watchdog,
+                     models=models)
     from .auth import list_devices
 
     print(f"Relay · machines {', '.join(machines.names()) or 'none yet'} · router {settings.router_model} · "
@@ -234,7 +333,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--port", type=int)
     s.add_argument("--fake-host", action="store_true", help="virtual desktop instead of this machine")
     s.add_argument("--policy", choices=["careful", "balanced", "autonomous"])
-    s.add_argument("--provider", choices=["anthropic", "deepseek", "openai"])
+    s.add_argument("--provider", choices=["anthropic", "deepseek", "openai", "openrouter", "gemini", "local"])
     s.add_argument("--model")
     sub.add_parser("pair", help="print a one-time code to pair a phone or Telegram chat")
     sub.add_parser("doctor", help="check permissions and configuration")
