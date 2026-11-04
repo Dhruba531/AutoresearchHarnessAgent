@@ -7,6 +7,9 @@ runs before anything is exported. Every step that spends money waits for a
 human to approve it. A second mode, **search campaigns**, hill-climbs a
 program's score autoresearch-style.
 
+> **Also in this repo:** [`mac-agent/`](mac-agent/README.md) — **Relay**, a Muse-style personal agent that
+> runs on your Mac mini and takes tasks, approvals and live screen control from your phone.
+
 Two parts in one repo:
 
 | Part | Where | What |
