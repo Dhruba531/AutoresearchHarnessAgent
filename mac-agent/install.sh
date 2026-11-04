@@ -231,7 +231,9 @@ main() {
   RELAY_HOME="$HOME_DIR" "$VPY" -m macagent install-launchagent >/dev/null
   if [ -n "$TS_ON" ]; then
     # The first time, Tailscale asks you to turn on HTTPS for your tailnet and prints a link: show it.
-    if OUT="$("$TS" serve --bg "$PORT" 2>&1 </dev/null)"; then
+    # Shown live: the first time, Tailscale prints a link to turn on HTTPS and waits until you do.
+    say "Sharing Relay on your tailnet. If Tailscale prints a link below, open it and click Enable"
+    if "$TS" serve --bg "$PORT" </dev/null; then
       say "Shared privately on your tailnet: works from anywhere (uni, bus, mobile data)"
       # Optional: any browser, even a computer without Tailscale (Tailscale Funnel). Off unless you say yes.
       if [ -n "${RELAY_PUBLIC:-}" ]; then put RELAY_PUBLIC "$RELAY_PUBLIC"; fi
@@ -243,17 +245,16 @@ main() {
         case "$ANS" in [yY]*) put RELAY_PUBLIC 1 ;; *) put RELAY_PUBLIC 0 ;; esac
       fi
       if grep -q '^RELAY_PUBLIC=1' "$ENV_FILE"; then
-        if OUT="$("$TS" funnel --bg "$PORT" 2>&1 </dev/null)"; then
+        say "Opening Relay to any browser. If Tailscale prints a link below, open it and allow Funnel"
+        if "$TS" funnel --bg "$PORT" </dev/null; then
           say "Open to any browser at https://$("$TS" status --json 2>/dev/null | sed -n 's/.*"DNSName": *"\([^"]*\)\.".*/\1/p' | head -1)"
           echo "  Get a sign-in link any time: send /app to your Telegram bot. Turn it off: tailscale funnel reset"
         else
-          echo "$OUT" | sed 's/^/  /'
-          echo "  Tailscale needs Funnel allowed first: open the link above, allow it, then run this script again."
+          echo "  Tailscale didn't turn Funnel on (see above). Allow it at the link it printed, then run this again."
         fi
       fi
     else
-      echo "$OUT" | sed 's/^/  /'
-      echo "  Tailscale needs one setting first: open the link above, turn on HTTPS, then run this script again."
+      echo "  Tailscale didn't share it (see above). Turn on HTTPS at the link it printed, then run this again."
     fi
   elif grep -q '^RELAY_BIND=0.0.0.0' "$ENV_FILE"; then
     say "Open to this Wi-Fi. If macOS asks whether python3 may accept incoming connections, click Allow."
