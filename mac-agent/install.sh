@@ -210,6 +210,22 @@ main() {
     else echo "  Telegram didn't accept the bot token. Check it in @BotFather, then run this again."; fi
   fi
 
+  # Come back by itself: never sleep, and power on again after a power cut (needs your Mac password once).
+  if command -v pmset >/dev/null 2>&1; then
+    PM="$(pmset -g 2>/dev/null || true)"
+    SLEEP="$(printf '%s\n' "$PM" | awk '$1 == "sleep" {print $2; exit}')"
+    AUTO="$(printf '%s\n' "$PM" | awk '$1 == "autorestart" {print $2; exit}')"
+    if { [ "$SLEEP" != 0 ] || { [ -n "$AUTO" ] && [ "$AUTO" != 1 ]; }; } && (: < /dev/tty) 2>/dev/null; then
+      printf 'Keep this Mac awake and have it start again after a power cut? Asks your Mac password once. [Y/n]: '
+      read -r ANS < /dev/tty || ANS=n
+      case "$ANS" in
+        [nN]*) echo "  Left as is." ;;
+        *) if sudo pmset -a sleep 0 autorestart 1 < /dev/tty; then say "The Mac stays awake and restarts after a power cut"
+           else echo "  Couldn't change it; set it in System Settings → Energy."; fi ;;
+      esac
+    fi
+  fi
+
   # 6. Start at login, keep running (restarts it, so new settings apply).
   say "Starting Relay (and at every login)"
   RELAY_HOME="$HOME_DIR" "$VPY" -m macagent install-launchagent >/dev/null
@@ -242,6 +258,11 @@ Done. If the permission check above showed ✗, open System Settings → Privacy
 to Screen Recording and Accessibility (that is what the background service runs), then run:
   launchctl kickstart -k gui/$(id -u)/dev.relay.agent
 Logs: $HOME_DIR/relay.log   ·   Update later: run the same one-line command again.
+
+To have it come back with no help after the Mac turns on: System Settings → Users & Groups →
+"Automatically log in as" → your account (not possible while FileVault is on; then log in once after a
+restart). Relay starts as soon as you are logged in. Check it any time with:
+  cd "$APP" && .venv/bin/python -m macagent doctor
 EOF
 }
 

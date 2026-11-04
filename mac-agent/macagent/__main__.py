@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -114,7 +115,30 @@ def cmd_doctor(settings: Settings) -> int:
                            capture_output=True, text=True, timeout=20)
         line(r.returncode == 0, "Automation of System Events",
              "Approve the macOS prompt, or System Settings → Privacy & Security → Automation.")
-        line(subprocess.run(["pmset", "-g"], capture_output=True).returncode == 0, "pmset available")
+        # Comes back by itself after the Mac turns on: awake, restarts after a power cut, logs in, starts Relay.
+        pm = subprocess.run(["pmset", "-g"], capture_output=True, text=True).stdout
+
+        def pmval(key: str) -> int | None:
+            m = re.search(rf"^\s*{key}\s+(\d+)", pm, re.M)
+            return int(m.group(1)) if m else None
+
+        line(pmval("sleep") == 0, "the Mac never sleeps on its own",
+             "System Settings → Energy → Prevent automatic sleeping (or run the installer again and say yes).")
+        restart = pmval("autorestart")
+        line(None if restart is None else restart == 1, "it starts again after a power cut",
+             "System Settings → Energy → Start up automatically after a power failure.")
+        agent_on = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/dev.relay.agent"],
+                                  capture_output=True).returncode == 0
+        line(agent_on, "Relay starts by itself at login",
+             "python -m macagent install-launchagent, and allow python under System Settings → General → "
+             "Login Items → Allow in the Background.")
+        auto = subprocess.run(["defaults", "read", "/Library/Preferences/com.apple.loginwindow", "autoLoginUser"],
+                              capture_output=True, text=True).returncode == 0
+        vault = "is On" in subprocess.run(["fdesetup", "status"], capture_output=True, text=True).stdout
+        line(True if auto else None, "it logs in by itself after a restart",
+             "FileVault is on, so macOS asks for your password once after every restart; Relay starts as soon as "
+             "you log in. (Turning FileVault off allows automatic login, but anyone with the Mac can then use it.)"
+             if vault else "System Settings → Users & Groups → Automatically log in as → your account.")
     if settings.provider == "local":
         import urllib.request
 
