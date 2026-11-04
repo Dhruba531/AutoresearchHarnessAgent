@@ -139,10 +139,7 @@ export function LineageGraph({ candidates }: { candidates: CandidateOut[] }) {
     //
     // (`...array` as arguments has a practical cap of ~100k elements before
     // hitting the engine's argument limit. Never a concern for a lineage tree.)
-    const width = Math.max(
-      1,
-      ...nodes.map((n) => n.x + NODE_W),
-    );
+    const width = Math.max(1, ...nodes.map((n) => n.x + NODE_W));
     const height = Math.max(1, ...nodes.map((n) => n.y + NODE_H));
 
     const families = Array.from(new Set(candidates.map((c) => String(c.edit_family))));
@@ -234,10 +231,22 @@ export function LineageGraph({ candidates }: { candidates: CandidateOut[] }) {
                     {/* SVG <text> is positioned by BASELINE, not by top edge,
                         which is why y=19 and y=34 look like arbitrary numbers —
                         they are tuned to sit inside a 46px-tall box. */}
-                    <text x={12} y={19} fill="var(--foreground)" fontSize={11} fontFamily="var(--font-mono)">
+                    <text
+                      x={12}
+                      y={19}
+                      fill="var(--foreground)"
+                      fontSize={11}
+                      fontFamily="var(--font-mono)"
+                    >
                       c{n.c.id} · {fmtNum(n.c.score, 3)}
                     </text>
-                    <text x={12} y={34} fill="var(--muted-foreground)" fontSize={9.5} fontFamily="var(--font-mono)">
+                    <text
+                      x={12}
+                      y={34}
+                      fill="var(--muted-foreground)"
+                      fontSize={9.5}
+                      fontFamily="var(--font-mono)"
+                    >
                       {/* SVG does not wrap or ellipsise text — it would simply
                           overflow the box — so long names are hard-truncated. */}
                       {String(n.c.edit_family).slice(0, 16)}

@@ -33,8 +33,8 @@
 // Default to `client.ts`. Reach for this only when an operation genuinely must
 // cross user boundaries (background jobs, admin tooling, aggregate reporting).
 
-import { createClient } from '@supabase/supabase-js';
-import type { Database } from './types';
+import { createClient } from "@supabase/supabase-js";
+import type { Database } from "./types";
 
 function createSupabaseAdminClient() {
   // `process.env` only — no `import.meta.env` fallback, unlike client.ts. That
@@ -47,10 +47,10 @@ function createSupabaseAdminClient() {
     // Same conditional-spread idiom as client.ts — see that file for the
     // explanation of `...(cond ? ['x'] : [])`.
     const missing = [
-      ...(!SUPABASE_URL ? ['SUPABASE_URL'] : []),
-      ...(!SUPABASE_SERVICE_ROLE_KEY ? ['SUPABASE_SERVICE_ROLE_KEY'] : []),
+      ...(!SUPABASE_URL ? ["SUPABASE_URL"] : []),
+      ...(!SUPABASE_SERVICE_ROLE_KEY ? ["SUPABASE_SERVICE_ROLE_KEY"] : []),
     ];
-    const message = `Missing Supabase environment variable(s): ${missing.join(', ')}. Set them in your .env.`;
+    const message = `Missing Supabase environment variable(s): ${missing.join(", ")}. Set them in your .env.`;
     console.error(`[Supabase] ${message}`);
     throw new Error(message);
   }
@@ -67,7 +67,7 @@ function createSupabaseAdminClient() {
       storage: undefined,
       persistSession: false,
       autoRefreshToken: false,
-    }
+    },
   });
 }
 

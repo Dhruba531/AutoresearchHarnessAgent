@@ -10,7 +10,10 @@ export const Route = createFileRoute("/changelog")({
   head: () => ({
     meta: [
       { title: "Changelog — AgentLab" },
-      { name: "description", content: "What's shipped in AgentLab — the governed agent research platform." },
+      {
+        name: "description",
+        content: "What's shipped in AgentLab — the governed agent research platform.",
+      },
       { property: "og:title", content: "Changelog — AgentLab" },
     ],
   }),
@@ -43,9 +46,18 @@ const RELEASES: Release[] = [
     date: "Jun 20, 2026",
     title: "Authentication & control room",
     entries: [
-      { tag: "added", text: "Operator console sign-in and registration with validated forms; a successful login routes you into the control room." },
-      { tag: "added", text: "In-app session auth on the edge — HMAC-signed, HttpOnly cookies with no external database, so it runs on the deployed Worker." },
-      { tag: "changed", text: "“Enter control room” now performs a real authentication round-trip instead of a placeholder action." },
+      {
+        tag: "added",
+        text: "Operator console sign-in and registration with validated forms; a successful login routes you into the control room.",
+      },
+      {
+        tag: "added",
+        text: "In-app session auth on the edge — HMAC-signed, HttpOnly cookies with no external database, so it runs on the deployed Worker.",
+      },
+      {
+        tag: "changed",
+        text: "“Enter control room” now performs a real authentication round-trip instead of a placeholder action.",
+      },
     ],
   },
   {
@@ -53,8 +65,14 @@ const RELEASES: Release[] = [
     date: "Jun 20, 2026",
     title: "Operator console workspace",
     entries: [
-      { tag: "added", text: "New /console workspace: project sidebar, idea capture, and a human brief-approval gate." },
-      { tag: "added", text: "Run setup with a cost gate, streaming run logs, an artifacts & draft view, reviewer panel, and final export." },
+      {
+        tag: "added",
+        text: "New /console workspace: project sidebar, idea capture, and a human brief-approval gate.",
+      },
+      {
+        tag: "added",
+        text: "Run setup with a cost gate, streaming run logs, an artifacts & draft view, reviewer panel, and final export.",
+      },
     ],
   },
   {
@@ -62,7 +80,10 @@ const RELEASES: Release[] = [
     date: "Jun 20, 2026",
     title: "Landing & foundations",
     entries: [
-      { tag: "changed", text: "Rebuilt the landing page in the serif + mono dark aesthetic — hero, run preview, and fleet overview." },
+      {
+        tag: "changed",
+        text: "Rebuilt the landing page in the serif + mono dark aesthetic — hero, run preview, and fleet overview.",
+      },
     ],
   },
 ];
@@ -102,11 +123,7 @@ function ChangelogPage() {
             <Link to="/" className="hover:text-foreground">
               Home
             </Link>
-            <Link
-              to="/console"
-              search={{ tl: undefined }}
-              className="hover:text-foreground"
-            >
+            <Link to="/console" search={{ tl: undefined }} className="hover:text-foreground">
               Console
             </Link>
           </nav>
@@ -119,8 +136,8 @@ function ChangelogPage() {
           What we&apos;ve shipped.
         </h1>
         <p className="mt-6 max-w-xl text-[15px] leading-relaxed text-muted-foreground">
-          AgentLab is in active development. Every entry below maps to something live in the
-          product — no placeholder build numbers.
+          AgentLab is in active development. Every entry below maps to something live in the product
+          — no placeholder build numbers.
         </p>
 
         <div className="mt-14 space-y-12">
@@ -139,7 +156,9 @@ function ChangelogPage() {
                   {release.entries.map((entry, i) => (
                     <li key={i} className="grid gap-2 sm:grid-cols-[88px_1fr] sm:items-baseline">
                       <TagPill tag={entry.tag} />
-                      <span className="text-sm leading-relaxed text-muted-foreground">{entry.text}</span>
+                      <span className="text-sm leading-relaxed text-muted-foreground">
+                        {entry.text}
+                      </span>
                     </li>
                   ))}
                 </ul>

@@ -266,7 +266,6 @@ function ConsolePage() {
       clearInterval(id);
       window.removeEventListener(PROVIDER_KEYS_CHANGED, onKeys);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authChecked]);
 
   useEffect(() => {

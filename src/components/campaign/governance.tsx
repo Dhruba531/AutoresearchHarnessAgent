@@ -137,7 +137,9 @@ export function GovernancePanel({
         meta={
           // A nested ternary: warning while pending, then green or red once
           // decided. Readable at this depth; anything more would want a helper.
-          <Chip tone={decided ? (audit?.decision === "promoted" ? "success" : "danger") : "warning"}>
+          <Chip
+            tone={decided ? (audit?.decision === "promoted" ? "success" : "danger") : "warning"}
+          >
             {audit?.decision ?? "pending"}
           </Chip>
         }
@@ -157,7 +159,11 @@ export function GovernancePanel({
             >
               {/* Icon AND colour AND text all encode pass/fail. Redundant on
                   purpose: colour alone excludes colour-blind users. */}
-              {c.ok ? <ShieldCheck className="h-3.5 w-3.5" /> : <ShieldAlert className="h-3.5 w-3.5" />}
+              {c.ok ? (
+                <ShieldCheck className="h-3.5 w-3.5" />
+              ) : (
+                <ShieldAlert className="h-3.5 w-3.5" />
+              )}
               {/* "review" rather than "fail" — a failed check is a prompt for a
                   human to look, not a verdict. */}
               {c.ok ? "pass" : "review"}
@@ -166,7 +172,9 @@ export function GovernancePanel({
                   (which does not), so TypeScript will not allow `c.detail`
                   unguarded. The `in` operator narrows the union at runtime and
                   at compile time simultaneously. */}
-              {"detail" in c && c.detail ? <span className="text-muted-foreground"> · {c.detail}</span> : null}
+              {"detail" in c && c.detail ? (
+                <span className="text-muted-foreground"> · {c.detail}</span>
+              ) : null}
             </span>
           </div>
         ))}
@@ -222,7 +230,9 @@ export function GovernancePanel({
             onChange={(e) => setReason(e.target.value)}
             // The placeholder states the requirement, which the disabled
             // Confirm button below then enforces.
-            placeholder={mode === "promote" ? "Sign-off note (optional)" : "Reason for rejection (required)"}
+            placeholder={
+              mode === "promote" ? "Sign-off note (optional)" : "Reason for rejection (required)"
+            }
             className="min-h-[96px] font-mono text-[13px]"
           />
           <DialogFooter>

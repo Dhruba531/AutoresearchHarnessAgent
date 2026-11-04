@@ -45,13 +45,7 @@ const SHELL = "mx-auto w-full max-w-[1400px] px-6 lg:px-10";
 // down the page.
 const GRID = "grid grid-cols-12 gap-x-6 gap-y-6";
 
-function Shell({
-  children,
-  className = "",
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) {
+function Shell({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <div className={`${SHELL} ${className}`}>{children}</div>;
 }
 
@@ -86,15 +80,7 @@ function Section({
 }
 
 /** Section header locked to the same rails in every section. */
-function SectionHead({
-  eyebrow,
-  title,
-  lede,
-}: {
-  eyebrow: string;
-  title: string;
-  lede?: string;
-}) {
+function SectionHead({ eyebrow, title, lede }: { eyebrow: string; title: string; lede?: string }) {
   return (
     <header className={`${GRID} items-start`}>
       <div className="col-span-12">
@@ -590,12 +576,12 @@ function LiveTelemetry() {
         ["steps.per_min", String(data.steps_per_min), "success"],
         ["spend.per_hr", `$${data.spend_per_hr.toFixed(2)}`, "muted"],
       ]
-    // SKELETON ROWS while loading: six placeholder rows of em dashes, matching
-    // the six real rows above. This keeps the panel's height identical before
-    // and after data arrives, so the page does not jump when the first poll
-    // lands. `Array.from({ length: 6 })` is the idiom for "make an array of n
-    // items" — the keys are indexed to stay unique.
-    : (Array.from({ length: 6 }).map((_, i) => [`—${i}`, "—", "muted"]) as Array<
+    : // SKELETON ROWS while loading: six placeholder rows of em dashes, matching
+      // the six real rows above. This keeps the panel's height identical before
+      // and after data arrives, so the page does not jump when the first poll
+      // lands. `Array.from({ length: 6 })` is the idiom for "make an array of n
+      // items" — the keys are indexed to stay unique.
+      (Array.from({ length: 6 }).map((_, i) => [`—${i}`, "—", "muted"]) as Array<
         [string, string, Tone]
       >);
 
@@ -607,7 +593,11 @@ function LiveTelemetry() {
             <div className="flex min-w-0 flex-wrap items-center gap-3">
               <Chip tone={err ? "error" : "success"}>live fleet telemetry</Chip>
               <span className="truncate font-mono text-[10.5px] tracking-[0.14em] text-muted-foreground">
-                {data ? `edge · ${data.region} · ${data.build}` : err ? "reconnecting…" : "syncing…"}
+                {data
+                  ? `edge · ${data.region} · ${data.build}`
+                  : err
+                    ? "reconnecting…"
+                    : "syncing…"}
               </span>
             </div>
             <span className="hidden shrink-0 font-mono text-[10.5px] tracking-[0.14em] text-muted-foreground sm:block">
