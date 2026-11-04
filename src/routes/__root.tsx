@@ -22,6 +22,7 @@ import {
   useRouter,
   HeadContent,
   Scripts,
+  type ErrorComponentProps,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 
@@ -144,7 +145,7 @@ function NotFoundComponent() {
  * the app cannot boot at all, whereas this runs inside a working React app that
  * hit a problem on one route.
  */
-function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
+function ErrorComponent({ error, reset }: ErrorComponentProps) {
   console.error(error);
   const router = useRouter();
   return (
