@@ -8,7 +8,9 @@ human to approve it. A second mode, **search campaigns**, hill-climbs a
 program's score autoresearch-style.
 
 > **Also in this repo:** [`mac-agent/`](mac-agent/README.md) — **Relay**, a Muse-style personal agent that
-> runs on your Mac mini and takes tasks, approvals and live screen control from your phone.
+> runs on your Mac mini and takes tasks, approvals and live screen control from your phone, built on DeepSeek's
+> Super-agent design: a router, isolated workers, a two-stage filter, Threads, Inline & Spill, background
+> workers, full-duplex jobs, machine daemons, and a Watchdog.
 
 Two parts in one repo:
 

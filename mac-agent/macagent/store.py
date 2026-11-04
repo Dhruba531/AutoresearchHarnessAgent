@@ -45,12 +45,39 @@ CREATE TABLE IF NOT EXISTS triggers (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, config TEXT NOT NULL, instruction TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1, secret TEXT, state TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL,
   last_fired REAL, fire_count INTEGER NOT NULL DEFAULT 0, last_error TEXT);
+-- every event that reaches the system, with an ID (E<n>) and its filter verdicts
+CREATE TABLE IF NOT EXISTS incoming (
+  id INTEGER PRIMARY KEY, source TEXT NOT NULL, kind TEXT NOT NULL, sender TEXT, text TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}', thread TEXT, stage TEXT NOT NULL DEFAULT 'new',
+  verdicts TEXT NOT NULL DEFAULT '[]', routed_to TEXT NOT NULL DEFAULT '[]', created_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS incoming_thread ON incoming(thread, id);
+CREATE TABLE IF NOT EXISTS subscriptions (
+  thread TEXT NOT NULL, task_id INTEGER NOT NULL, created_at REAL NOT NULL, PRIMARY KEY(thread, task_id));
+-- spilled content kept outside the context window, read back by ID (O<n>)
+CREATE TABLE IF NOT EXISTS objects (
+  id INTEGER PRIMARY KEY, task_id INTEGER, kind TEXT NOT NULL, label TEXT, content TEXT NOT NULL, created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS policies (
+  id INTEGER PRIMARY KEY, text TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_by TEXT, created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS machines (
+  id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, token_hash TEXT UNIQUE NOT NULL, created_at REAL NOT NULL,
+  last_seen REAL, info TEXT NOT NULL DEFAULT '{}', revoked INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS watchdog (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, data TEXT NOT NULL, created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS proposals (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL, data TEXT NOT NULL, summary TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+  created_at REAL NOT NULL, decided_at REAL);
 """
 
-MIGRATIONS = ["ALTER TABLE tasks ADD COLUMN origin TEXT"]
+MIGRATIONS = [
+    "ALTER TABLE tasks ADD COLUMN origin TEXT",
+    "ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'normal'",
+    "ALTER TABLE tasks ADD COLUMN machine TEXT",
+    "ALTER TABLE tasks ADD COLUMN resume_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN guidance TEXT",
+]
 
 TASK_FIELDS = ("id", "title", "prompt", "status", "source", "created_at", "updated_at", "started_at", "ended_at",
-               "run_at", "repeat", "result", "error", "cost_usd", "provider", "model", "steps", "origin")
+               "run_at", "repeat", "result", "error", "cost_usd", "provider", "model", "steps", "origin", "mode",
+               "machine", "resume_count")
 
 
 class Store:
@@ -94,19 +121,20 @@ class Store:
     # -- tasks --------------------------------------------------------------
     def create_task(self, prompt: str, *, source: str = "app", run_at: float | None = None,
                     repeat: str | None = None, provider: str = "", model: str = "", origin: str | None = None,
-                    title: str | None = None) -> int:
+                    title: str | None = None, mode: str = "normal", machine: str | None = None,
+                    guidance: str | None = None) -> int:
         now = time.time()
         title = (title or (prompt.strip().splitlines()[0] if prompt.strip() else "Task"))[:80]
         status = "scheduled" if run_at and run_at > now + 1 else "queued"
         cur = self.x(
-            "INSERT INTO tasks(title,prompt,status,source,created_at,updated_at,run_at,repeat,provider,model,origin)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (title, prompt, status, source, now, now, run_at, repeat, provider, model, origin),
+            "INSERT INTO tasks(title,prompt,status,source,created_at,updated_at,run_at,repeat,provider,model,origin,mode,"
+            "machine,guidance) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (title, prompt, status, source, now, now, run_at, repeat, provider, model, origin, mode, machine, guidance),
         )
         return int(cur.lastrowid)
 
     def task(self, task_id: int, with_history: bool = False) -> dict | None:
-        cols = ",".join(TASK_FIELDS) + (",history" if with_history else "")
+        cols = ",".join(TASK_FIELDS) + (",history,guidance" if with_history else "")
         row = self.one(f"SELECT {cols} FROM tasks WHERE id=?", (task_id,))
         if row and with_history:
             row["history"] = json.loads(row["history"])
@@ -213,3 +241,92 @@ class Store:
         if r:
             r["config"], r["state"] = json.loads(r["config"]), json.loads(r["state"])
         return r
+
+    # -- incoming events (E<n>) ----------------------------------------------------
+    def add_incoming(self, ev: dict) -> dict:
+        cur = self.x(
+            "INSERT INTO incoming(source,kind,sender,text,payload,thread,created_at) VALUES(?,?,?,?,?,?,?)",
+            (ev["source"], ev["kind"], ev.get("sender"), ev.get("text") or "", json.dumps(ev.get("payload") or {}, default=str),
+             ev.get("thread"), ev.get("at") or time.time()),
+        )
+        return self.incoming(int(cur.lastrowid))
+
+    def incoming(self, eid: int) -> dict | None:
+        r = self.one("SELECT * FROM incoming WHERE id=?", (eid,))
+        if r:
+            for k in ("payload", "verdicts", "routed_to"):
+                r[k] = json.loads(r[k])
+        return r
+
+    def incoming_list(self, limit: int = 100, where: str = "", args: tuple = ()) -> list[dict]:
+        rows = self.all(f"SELECT * FROM incoming {where} ORDER BY id DESC LIMIT ?", (*args, limit))
+        for r in rows:
+            for k in ("payload", "verdicts", "routed_to"):
+                r[k] = json.loads(r[k])
+        return rows
+
+    def verdict(self, eid: int, by: str, verdict: str, why: str, stage: str | None = None,
+                routed_to: list[int] | None = None) -> None:
+        r = self.incoming(eid)
+        if r is None:
+            return
+        verdicts = r["verdicts"] + [{"by": by, "verdict": verdict, "why": why[:300]}]
+        routed = sorted(set(r["routed_to"]) | set(routed_to or []))
+        self.x("UPDATE incoming SET verdicts=?, stage=?, routed_to=? WHERE id=?",
+               (json.dumps(verdicts), stage or r["stage"], json.dumps(routed), eid))
+
+    # -- threads --------------------------------------------------------------------
+    def subscribe(self, thread: str, task_id: int) -> None:
+        self.x("INSERT OR IGNORE INTO subscriptions(thread,task_id,created_at) VALUES(?,?,?)", (thread, task_id, time.time()))
+
+    def unsubscribe(self, thread: str, task_id: int) -> None:
+        self.x("DELETE FROM subscriptions WHERE thread=? AND task_id=?", (thread, task_id))
+
+    def subscribers(self, thread: str, live_only: bool = True) -> list[int]:
+        sql = "SELECT s.task_id FROM subscriptions s JOIN tasks t ON t.id=s.task_id WHERE s.thread=?"
+        if live_only:
+            sql += " AND t.status IN ('queued','running','waiting','paused')"
+        return [r["task_id"] for r in self.all(sql + " ORDER BY s.task_id", (thread,))]
+
+    def threads_of(self, task_id: int) -> list[str]:
+        return [r["thread"] for r in self.all("SELECT thread FROM subscriptions WHERE task_id=? ORDER BY created_at", (task_id,))]
+
+    # -- spilled objects (O<n>) ---------------------------------------------------------
+    def add_object(self, task_id: int | None, kind: str, content: str, label: str = "") -> int:
+        return int(self.x("INSERT INTO objects(task_id,kind,label,content,created_at) VALUES(?,?,?,?,?)",
+                          (task_id, kind, label, content, time.time())).lastrowid)
+
+    def object(self, oid: int) -> dict | None:
+        return self.one("SELECT * FROM objects WHERE id=?", (oid,))
+
+    # -- policies (prompts people can edit) -----------------------------------------------
+    def policies(self, enabled_only: bool = False) -> list[dict]:
+        return self.all("SELECT * FROM policies" + (" WHERE enabled=1" if enabled_only else "") + " ORDER BY id")
+
+    def add_policy(self, text: str, by: str = "user", enabled: bool = True) -> int:
+        return int(self.x("INSERT INTO policies(text,enabled,created_by,created_at) VALUES(?,?,?,?)",
+                          (text.strip(), 1 if enabled else 0, by, time.time())).lastrowid)
+
+    # -- watchdog & proposals ------------------------------------------------------------
+    def add_watchdog(self, kind: str, data: dict) -> dict:
+        now = time.time()
+        wid = int(self.x("INSERT INTO watchdog(kind,data,created_at) VALUES(?,?,?)", (kind, json.dumps(data, default=str), now)).lastrowid)
+        return {"id": wid, "kind": kind, "data": data, "created_at": now}
+
+    def watchdog_log(self, kinds: tuple[str, ...], limit: int = 50) -> list[dict]:
+        marks = ",".join("?" * len(kinds))
+        rows = self.all(f"SELECT * FROM watchdog WHERE kind IN ({marks}) ORDER BY id DESC LIMIT ?", (*kinds, limit))
+        for r in rows:
+            r["data"] = json.loads(r["data"])
+        return list(reversed(rows))
+
+    def add_proposal(self, kind: str, data: dict, summary: str) -> int:
+        return int(self.x("INSERT INTO proposals(kind,data,summary,created_at) VALUES(?,?,?,?)",
+                          (kind, json.dumps(data), summary, time.time())).lastrowid)
+
+    def proposals(self, status: str | None = None) -> list[dict]:
+        rows = self.all("SELECT * FROM proposals" + (" WHERE status=?" if status else "") + " ORDER BY id DESC LIMIT 50",
+                        (status,) if status else ())
+        for r in rows:
+            r["data"] = json.loads(r["data"])
+        return rows

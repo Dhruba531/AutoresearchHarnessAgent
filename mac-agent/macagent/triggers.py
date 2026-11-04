@@ -46,6 +46,32 @@ class TriggerError(ValueError):
     pass
 
 
+def _subject_key(subject: str) -> str:
+    s = re.sub(r"^\s*((re|fwd?|aw|wg)\s*:\s*)+", "", subject or "", flags=re.I)
+    return re.sub(r"\s+", " ", s).strip().lower()[:80]
+
+
+def describe(t: dict, item: Any) -> tuple[str, str | None, str | None]:
+    """(text, sender, thread key) for one trigger item."""
+    kind = t["kind"]
+    if not isinstance(item, dict):
+        return str(item)[:2000], None, f"trigger:{t['id']}"
+    if kind == "folder":
+        return (f"new {'folder' if item.get('folder') else 'file'} {item.get('name')} ({item.get('size')} bytes) in "
+                f"{Path(item.get('path', '')).parent}", None, f"folder:{t['id']}")
+    if kind == "mail":
+        return (f"email from {item.get('from')}: {item.get('subject')}", item.get("from"),
+                f"mail:{_subject_key(item.get('subject', ''))}")
+    if kind == "calendar":
+        return (f"{item.get('title')} starts in {item.get('starts_in_min')} min" +
+                (f" at {item['location']}" if item.get("location") else ""), None, f"cal:{item.get('title')}|{item.get('start')}")
+    if kind == "system":
+        return ("; ".join(f"{k.replace('_', ' ')} {v}" for k, v in item.items()), None, f"system:{t['id']}")
+    text = item.get("text") or item.get("message") or json.dumps(item, ensure_ascii=False, default=str)
+    return str(text)[:4000], item.get("from") or item.get("sender"), \
+        (f"hook:{t['id']}:{item['thread']}" if item.get("thread") else f"hook:{t['id']}")
+
+
 class Triggers:
     def __init__(self, store: Store, host: Host, settings: Settings, router=None):
         self.store, self.host, self.settings = store, host, settings
@@ -86,12 +112,20 @@ class Triggers:
         sets = ",".join(f"{k}=?" for k in fields)
         self.store.x(f"UPDATE triggers SET {sets} WHERE id=?", (*fields.values(), t["id"]))
 
-    def fire(self, t: dict, payload: Any) -> None:
+    def fire(self, t: dict, items: list[dict] | dict) -> None:
+        """One event per item (each email, file, calendar event), so the filter judges each on its own and
+        follow-ups join the right Thread. The router batches them anyway."""
+        items = items if isinstance(items, list) else [items]
         self.store.x("UPDATE triggers SET last_fired=?, fire_count=fire_count+1, last_error=NULL WHERE id=?",
                      (time.time(), t["id"]))
-        if self.router is not None:
-            self.router.submit({"kind": "trigger", "trigger": {k: t[k] for k in ("id", "name", "kind", "instruction")},
-                                "payload": payload})
+        if self.router is None:
+            return
+        meta = {k: t[k] for k in ("id", "name", "kind", "instruction")}
+        for item in items:
+            text, sender, thread = describe(t, item)
+            self.router.submit({"kind": "trigger", "source": f"trigger:{t['id']}", "reply": "all", "sender": sender,
+                                "text": text, "payload": item if isinstance(item, dict) else {"value": item},
+                                "thread": thread, "trigger": meta})
 
     def webhook(self, trigger_id: int, secret: str | None, payload: Any) -> bool:
         t = self.store.trigger(trigger_id)
@@ -147,7 +181,7 @@ class Triggers:
                 ready.append({"name": p.name, "path": str(p), "size": size, "folder": p.is_dir()})
             now[p.name] = entry
         state["seen"] = now
-        return {"folder": str(root), "new": ready} if ready else None
+        return ready or None
 
     async def _poll_mail(self, cfg: dict, state: dict, first: bool) -> Any:
         proc = await self.host.osascript(scripts.MAIL_RECENT, [json.dumps({"query": cfg.get("query"), "limit": 25})],
@@ -158,7 +192,7 @@ class Triggers:
         seen = set(state.get("seen", []))
         new = [m for m in msgs if m.get("unread", True) and m.get("id") not in seen]
         state["seen"] = (list(seen) + [m.get("id") for m in msgs])[-500:]
-        return {"messages": [{k: m.get(k) for k in ("id", "from", "subject", "date")} for m in new]} if new else None
+        return [{k: m.get(k) for k in ("id", "from", "subject", "date")} for m in new] or None
 
     async def _poll_calendar(self, cfg: dict, state: dict, first: bool) -> Any:
         proc = await self.host.osascript(scripts.CALENDAR_EVENTS, [json.dumps({"days": 1})], language=scripts.JXA, timeout=120)
@@ -178,7 +212,7 @@ class Triggers:
                 soon.append({**ev, "starts_in_min": round(secs / 60)})
                 fired.add(key)
         state["fired"] = list(fired)[-200:]
-        return {"upcoming": soon} if soon else None
+        return soon or None
 
     async def _poll_system(self, cfg: dict, state: dict, first: bool) -> Any:
         alerts = []
@@ -200,4 +234,4 @@ class Triggers:
                 if low and not state.get("disk_low"):
                     alerts.append({"disk_free_gb": round(free_gb, 1)})
                 state["disk_low"] = low
-        return {"alerts": alerts} if alerts else None
+        return alerts or None

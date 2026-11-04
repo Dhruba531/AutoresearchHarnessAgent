@@ -146,8 +146,13 @@ def classify(name: str, inp: dict, toolset: str | None, settings: Settings) -> t
         where = f" at {inp.get('coordinate')}" if inp.get("coordinate") else ""
         what = f" “{_short(inp.get('text', ''), 60)}”" if name in {"type", "key", "hold_key"} else ""
         return "act", f"screen: {name}{where}{what}"
-    if name == "run_shell":
-        return classify_shell(inp.get("command", "")), f"Run in Terminal: {_short(inp.get('command', ''), 200)}"
+    if name in {"run_shell", "job_start"}:
+        verb = "Start in background" if name == "job_start" else "Run in Terminal"
+        return classify_shell(inp.get("command", "")), f"{verb}: {_short(inp.get('command', ''), 200)}"
+    if name == "report":
+        return "read", f"report: {_short(inp.get('text', ''), 160)}"
+    if name in {"read", "subscribe_thread", "unsubscribe_thread", "discard", "job_stop"}:
+        return "read", f"{name}: {_short(inp.get('id') or inp.get('thread') or inp.get('reason') or inp.get('job_id') or '', 100)}"
     if name == "applescript":
         return classify_script(inp.get("script", "")), f"Run AppleScript: {_short(inp.get('script', ''), 200)}"
     if name in {"list_dir", "read_file"}:

@@ -64,7 +64,7 @@ async def until(pred, timeout=10):
 async def test_router_batches_dispatches_and_reports_back(tmp_path):
     def router_script(body):
         content = body["messages"][0]["content"]
-        if "ended: done" in content:
+        if "ended done" in content:
             return [tool("r9", "reply", {"text": "Your dentist is booked for Thursday 9:30."})], "tool_use"
         return [tool("r1", "dispatch_task", {"title": "Book dentist",
                                              "instructions": "Book a dentist appointment on Thursday morning; the user "

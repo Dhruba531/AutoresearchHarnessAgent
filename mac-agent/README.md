@@ -6,49 +6,35 @@ you're away. It works across apps, files, Calendar, Reminders, Notes, Mail and
 Messages, can see and drive the whole screen, and **asks you before anything
 that sends, deletes or changes things**.
 
-## Architecture: a router, workers, and triggers
+## Architecture: DeepSeek's Super-agent design
 
-Relay follows the super-agent design from "How DeepSeek SuperAgents Work":
+Relay implements the design in DeepSeek Harness's note *Exploring Super-agent
+Design* (1 Nov 2026), as explained by Vizuara. It is one continuous,
+productive, proactive and persistent agent: you never open sessions; events
+reach it and it opens its own.
 
 ```
-  channels                    ③ ROUTING LAYER                      WORKER LAYER (×RELAY_WORKERS)
-  phone app (Chat) ─┐         light model (Claude Haiku 5.5)       most capable model (Claude Opus 5.5)
-  Telegram ─────────┼──────▶  • the one place humans talk to  ───▶ • isolated context per task
-  (more channels)  ─┘         • NO task execution, no Mac tools     • full Mac tools + computer use
-                              • replies, dispatches, steers,        • approvals enforced in code
-  ⑤ EVENT TRIGGERS            answers worker questions            • one worker holds the screen
-  folder · mail · calendar ─▶ • batches events: many → 1 call        lease at a time; others run
-  system sensors · webhooks   • results come back here and are      in parallel
-                                reported to the channel that asked
+ where things happen        ⑤ TRIGGERS + FILTER          ④ ROUTER                     WORKERS
+ phone app · Telegram ─┐    code rules (fast path)       one voice, light model       own context + tools,
+ Telegram groups ──────┼──▶ └▶ policies on a light ────▶ no tools of its own ───────▶ strongest model,
+ folder · mail · cal ──┤       model (slow path)         batches events               parallel, screen lease
+ sensors · webhooks ───┘    ⑥ followed Thread? ─────── pass straight through ───────▶ (§8 silent · §9 jobs)
+                                                          ⑨ replies per channel ◀── report()
+ ⑩ session DB + loop here   ── commands ──▶ this Mac / other Macs via a stateless daemon
+ ⑪ Watchdog (own thread)    ── alive? making progress? ──▶ nudges, pauses, proposals you approve
 ```
 
-- **Routing layer** (`router.py`). Every human message from every channel,
-  every trigger event and every finished task goes to one router.
-  - Events that arrive together are batched into a single call to a light,
-    cheap model.
-  - It can only talk and dispatch: reply, start a worker task with
-    self-contained instructions, add a detail to a task, cancel, pause or
-    resume one, answer a worker's question, manage triggers, and remember
-    facts.
-  - It has no Mac tools, and it cannot approve anything. Approvals are the
-    buttons on your phone.
-  - Without a model key it falls back to deterministic routing: every message
-    becomes a task, and results are reported back.
-- **Worker layer** (`agent.py`). Each task runs in its own context on the most
-  capable model, with all the tools.
-  - Several run in parallel (3 by default).
-  - The screen is shared, so a worker takes the screen lease on its first
-    screen action and keeps it until it finishes; other screen work waits its
-    turn.
-- **Event-driven triggers** (`triggers.py`). These are things happening
-  around the Mac, each paired with a standing instruction ("file receipts
-  into Documents/Receipts"):
-  - new files in a folder, unread email, or an upcoming calendar event;
-  - low disk or battery;
-  - a webhook from iOS Shortcuts, IFTTT or Home Assistant.
-
-  The router decides what each event needs. You can create triggers in
-  Settings, or just say "whenever…" in Chat.
+| § in the note | In Relay |
+| --- | --- |
+| **4 Router and Workers** | `router.py` is the only thing that talks to people. It runs on a light model (Claude Haiku 5.5 or `deepseek-chat`), has no tools that touch a machine, and batches events that arrive together into one call. Workers (`agent.py`) each have an isolated context and the strongest model (Claude Opus 5.5); several run in parallel. Workers never post: they `report()`, and the router writes every reply. |
+| **5 Which events matter** | `filters.py`: code rules first (per-source *admit / candidate / explicit-only / ignore*, sender lists; an @mention or a direct message is admitted at once), then a light model judges candidates against **policies written as prompts** that you edit in Settings. Every event keeps its verdicts (Tasks → Events). |
+| **6 Threads and pass-through** | Events carry a Thread key (email subject chain, Telegram reply chain, one automation's stream). A dispatched worker subscribes to its events' Threads; follow-ups are delivered straight into its inbox by code, with no router decision. Many-to-many: workers can `subscribe_thread` / `unsubscribe_thread`. |
+| **7 Inline & Spill, Chain of Recall** | `context.py`: every object has an ID (`E12`, `W7`, `O31`, `thread:…`). An event is injected minimal-first, with what's near in space and time inlined as one line each. Long content is cut with a pointer, and tool outputs over 6 KB are spilled to the database. `read(ID)` pages through anything. The router keeps one line per past task, then follows IDs (`read(W7)`) to answer "did that get fixed?". |
+| **8 Acting ahead** | `dispatch_task(mode="silent")`: a speculative background worker. It cannot use the screen or ask you anything. It may prepare (draft a reply), but not take actions that need approval. It either `discard()`s quietly, or reports what it confirmed. The default policies include "silently reproduce and fix" and "draft replies to invitations". |
+| **9 Full duplex, one voice per channel** | `job_start()` returns `Started [J3]` at once. The result arrives later as a message (full output → `read(O…)`), and the worker keeps answering in the meantime; `job_stop()` ends a job. Chat replies are capped at **100 words**. |
+| **10 Compute, state, environments** | Sessions live in SQLite. After a restart, interrupted workers **resume** from their history (up to 3 times). Other machines run `python -m macagent daemon`, which connects out to the server, keeps no session state, and executes host operations. A task targets a machine, and if that machine sleeps, only that task waits. `RELAY_LOCAL_HOST=none` runs the loop on a server with no screen of its own. |
+| **11 Watchdog** | `watchdog.py` runs on its own thread and event loop, on a schedule. It checks liveness (event-loop heartbeat, database, model errors, offline machines, failing triggers) and progress (code heuristics for repeated actions or failures and stalls, then a light model judges moving / stuck / drifting). It nudges a stuck worker, and pauses it if it's still stuck after the nudge. Ask it "why did #12 keep retrying?"; it can propose policy, guidance or trigger changes that apply only when you tap Apply. |
+| **13 Open problems** | Security is still the big one; see *Limits* below. |
 
 ## What it does
 
@@ -165,6 +151,20 @@ Paired devices can be removed in Settings.
 and open `http://<mac-ip>:8765`. This is plain HTTP, so use it only on a
 network you trust, and never forward the port to the internet.
 
+### Add your other Macs (optional)
+
+In Settings → Machines, tap **Add a machine** and run the command it shows on
+the other Mac, for example a MacBook with its own apps and files:
+
+```bash
+python -m macagent daemon --server https://<mac-mini>.<tailnet>.ts.net --name macbook --code ABCD-EFGH
+```
+
+The daemon connects out, keeps no state, and needs the same macOS
+permissions as Relay. The router can then send work to "macbook", and the
+Screen tab can show and control it. When the MacBook sleeps, only its tasks
+wait.
+
 ### Keep it always on
 
 ```bash
@@ -211,6 +211,9 @@ notifications.
 | `RELAY_ROUTER_MODEL` | `claude-haiku-5-5` | the light routing model (`deepseek-chat` with DeepSeek) |
 | `RELAY_WORKERS` | `3` | tasks that run at once (screen work still takes turns) |
 | `RELAY_ROUTER_BATCH_MS`, `RELAY_ROUTER_MAX_WAIT_MS` | `1200`, `4000` | how long the router gathers a batch |
+| `RELAY_LOCAL_HOST` | `auto` | `none`: no screen of its own; drive machines only through daemons |
+| `RELAY_WATCHDOG_INTERVAL_S`, `RELAY_WATCHDOG_STALL_S` | `300`, `900` | how often the Watchdog checks; how long without a step counts as stalled |
+| `RELAY_WATCHDOG_RESTART` | `false` | if the event loop hangs, exit so launchd restarts Relay (workers resume) |
 | `RELAY_POLICY` | `balanced` | `careful` / `balanced` / `autonomous` |
 | `RELAY_DAILY_CAP_USD` | `10` | stop when today's spend reaches this |
 | `RELAY_MAX_STEPS` | `80` | per task, before it pauses for a follow-up |
@@ -224,7 +227,11 @@ notifications.
 
 | File | Role |
 | --- | --- |
-| `macagent/router.py` | routing layer: channels, batching, light model, dispatch-only tools, fallback |
+| `macagent/router.py` | routing layer: event log, pass-through, batching, light model, dispatch-only tools, `read`, 100-word cap, fallback |
+| `macagent/filters.py` | two-stage filter: code rules, then policies on a light model |
+| `macagent/context.py` | IDs, Inline & Spill, `read()` / Chain of Recall |
+| `macagent/machines.py` | machine registry, `RemoteHost`, the stateless daemon |
+| `macagent/watchdog.py` | the Watchdog: liveness, progress, nudges, maintainer chat, proposals |
 | `macagent/triggers.py` | event triggers: folder, mail, calendar, system sensors, webhooks |
 | `macagent/agent.py` | worker layer: parallel pool, screen lease, model↔tool loop, approvals, pause/take-over, schedule, budget |
 | `macagent/llm.py` | Claude via the `anthropic` SDK (computer toolset, progress notes, context clearing, refusal fallback, caching); DeepSeek/OpenAI adapter |
@@ -257,6 +264,16 @@ python -m pytest
 The tests run the real Anthropic SDK against a mock transport, on the
 virtual desktop. They cover:
 
+- every section of the design note (`tests/test_design_note.py`):
+  - the two-stage filter;
+  - Thread pass-through while a background job runs;
+  - spill, then `read()`, then Chain of Recall;
+  - silent workers that discard or report;
+  - the 100-word cap;
+  - a task waiting for its machine, then running on it;
+  - resume after a restart, and the daemon over a real WebSocket;
+  - Watchdog nudge → pause → proposal → apply;
+  - Telegram group mentions and threads;
 - the router batching a burst into one light-model call with no Mac tools,
   dispatching, reporting back, answering questions but never approvals, and
   its no-model fallback;
@@ -279,7 +296,15 @@ virtual desktop. They cover:
   it was exercised on the virtual desktop. The JXA scripts parse, but
   AppleScript can only be checked on macOS. Expect a first-run fix or two;
   `doctor` and the error messages point at permissions first.
-- Only the **main display** is captured and controlled.
+- Only the **main display** of each machine is captured and controlled.
+- Background jobs live in memory. After a restart, workers resume, but a job
+  they had started must be started again, and the worker is told so.
+- **The design note's open security problem applies.** The loop and every
+  paired machine trust each other, so a compromised server or a successful
+  prompt injection reaches every connected machine. Pair only machines you
+  own, keep the server inside your tailnet, and remove machines you no longer
+  use. API keys stay in the server's environment and never enter a model's
+  context.
 - **Prompt injection.** Content Relay reads (emails, web pages) can try to
   instruct it. Relay treats such content as data, and code-enforced approvals
   gate what matters. Still, read approval cards before you tap Approve. The

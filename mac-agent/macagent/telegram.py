@@ -12,6 +12,13 @@ obeyed; everything else is ignored.
   /screen         → a screenshot of the Mac
   /stop           → cancel the running task
   approvals       → Approve / Deny buttons; questions → reply with the answer
+
+In a group (pair it by sending /pair CODE there), Relay behaves like the
+design note's team chat: an @mention of the bot or a reply to it is an
+explicit request and is admitted directly; other messages are candidates the
+filter judges against your policies (turn off the bot's privacy mode in
+@BotFather so it can see them). Reply chains form Threads, so follow-ups go
+straight to the worker already on them.
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 
 import httpx
@@ -43,6 +51,8 @@ class TelegramBot:
         self.task_messages: dict[tuple[int, int], int] = {}  # (chat, message) → task id
         self.question_messages: dict[tuple[int, int], int] = {}  # (chat, message) → approval id
         self.router = router
+        self.me: dict | None = None
+        self.roots: dict[tuple[int, int], int] = {}  # (chat, message) → root message of its reply chain
 
     # -- plumbing --------------------------------------------------------------------
     async def call(self, method: str, **params) -> dict:
@@ -85,6 +95,7 @@ class TelegramBot:
             return await self.on_button(u["callback_query"])
         msg = u.get("message") or {}
         chat = (msg.get("chat") or {}).get("id")
+        group = (msg.get("chat") or {}).get("type") in {"group", "supergroup"}
         text = (msg.get("text") or "").strip()
         if not chat or not text:
             return
@@ -117,12 +128,31 @@ class TelegramBot:
             return await self.send_screen(chat)
         if self.router is not None:
             name = (msg.get("from") or {}).get("first_name") or "user"
+            if group:
+                return await self.on_group(chat, msg, text, name)
             self.router.human(f"telegram:{chat}", text, sender=name)
             await self.call("sendChatAction", chat_id=chat, action="typing")
             return
         tid = self.agent.submit(text, source="telegram", origin=f"telegram:{chat}")
         sent = await self.say(chat, f"On it — task #{tid}. Reply to this message to add details.")
         self.task_messages[(chat, sent["message_id"])] = tid
+
+    async def on_group(self, chat: int, msg: dict, text: str, sender: str) -> None:
+        if self.me is None:
+            try:
+                self.me = await self.call("getMe")
+            except Exception:
+                self.me = {}
+        username = (self.me or {}).get("username") or ""
+        reply = msg.get("reply_to_message") or {}
+        mentioned = bool(username) and f"@{username.lower()}" in text.lower()
+        to_bot = (reply.get("from") or {}).get("id") == (self.me or {}).get("id") and bool(self.me)
+        root = self.roots.get((chat, reply["message_id"]), reply["message_id"]) if reply else msg.get("message_id")
+        self.roots[(chat, msg.get("message_id"))] = root
+        if username:
+            text = re.sub(rf"@{re.escape(username)}\b", "", text, flags=re.I).strip() or text
+        self.router.human(f"telegram:{chat}", text, sender=sender, source=f"telegram-group:{chat}",
+                          explicit=mentioned or to_bot, thread=f"tg:{chat}:{root}")
 
     async def on_pair(self, chat: int, text: str, msg: dict) -> None:
         parts = text.split()

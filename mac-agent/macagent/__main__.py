@@ -166,23 +166,32 @@ def cmd_serve(settings: Settings) -> None:
     import uvicorn
 
     from .agent import Agent
+    from .filters import Filter
     from .host import make_host
     from .llm import make_adapter, make_router_adapter
+    from .machines import MachineRegistry
     from .notify import Ntfy
     from .router import Router, WebChannel
     from .server import create_app
     from .store import Store
     from .triggers import Triggers
+    from .watchdog import Watchdog
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     store = Store(str(settings.db_path))
-    host = make_host(settings.fake_host, settings.screen_max_edge)
-    # Worker layer: heavy model, isolated context per task, parallel, one screen lease.
-    agent = Agent(settings, store, host, lambda: make_adapter(settings))
-    # Event triggers feed the router; the router is the only thing that talks to people.
-    triggers = Triggers(store, host, settings)
-    router = Router(settings, store, agent, lambda: make_router_adapter(settings), triggers)
-    triggers.router = router
+    host = None if settings.local_host == "none" else make_host(settings.fake_host, settings.screen_max_edge)
+    machines = MachineRegistry(store, host)  # this Mac (if any) + daemons on other machines
+    light = lambda: make_router_adapter(settings)  # noqa: E731
+    # Worker layer: strongest model, isolated context per task, parallel, a screen lease per machine.
+    agent = Agent(settings, store, machines, lambda: make_adapter(settings))
+    # Event triggers → two-stage filter (code, then policies on a light model) → router.
+    triggers = Triggers(store, host, settings) if host else None
+    router = Router(settings, store, agent, light, triggers, Filter(store, light))
+    if triggers:
+        triggers.router = router
+    # The Watchdog runs on its own thread and loop, outside the main system.
+    watchdog = Watchdog(settings, store, agent, light, interval_s=settings.watchdog_interval_s,
+                        stall_s=settings.watchdog_stall_s, restart_on_hang=settings.watchdog_restart)
     ntfy = Ntfy(settings.ntfy_server, settings.ntfy_topic) if settings.ntfy_topic else None
     if ntfy:
         agent.notifiers.append(ntfy)
@@ -203,11 +212,11 @@ def cmd_serve(settings: Settings) -> None:
     def background():
         return [bot.run()] if bot else []
 
-    app = create_app(settings, store, agent, background, router=router, triggers=triggers)
+    app = create_app(settings, store, agent, background, router=router, triggers=triggers, watchdog=watchdog)
     from .auth import list_devices
 
-    print(f"Relay {host.name} host · router {settings.router_model} · workers {settings.model} ×{settings.max_workers}"
-          f" · policy {settings.policy}")
+    print(f"Relay · machines {', '.join(machines.names()) or 'none yet'} · router {settings.router_model} · "
+          f"workers {settings.model} ×{settings.max_workers} · policy {settings.policy}")
     if not list_devices(store):
         cmd_pair(settings)
     try:
@@ -230,6 +239,11 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("pair", help="print a one-time code to pair a phone or Telegram chat")
     sub.add_parser("doctor", help="check permissions and configuration")
     sub.add_parser("install-launchagent", help="start Relay at login and keep it running")
+    d = sub.add_parser("daemon", help="serve this machine to a Relay server (keeps no session state)")
+    d.add_argument("--server", required=True, help="the Relay server URL, e.g. https://mini.tailnet.ts.net")
+    d.add_argument("--name", default=socket.gethostname().split(".")[0], help="this machine's name")
+    d.add_argument("--code", help="pairing code (first run only)")
+    d.add_argument("--fake-host", action="store_true")
     args = p.parse_args(argv)
 
     if getattr(args, "provider", None):
@@ -249,6 +263,10 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(cmd_doctor(settings))
     elif args.cmd == "install-launchagent":
         cmd_install_launchagent(settings)
+    elif args.cmd == "daemon":
+        from .machines import run_daemon
+
+        asyncio.run(run_daemon(args.server, args.name, args.code, fake=args.fake_host, max_edge=settings.screen_max_edge))
 
 
 if __name__ == "__main__":

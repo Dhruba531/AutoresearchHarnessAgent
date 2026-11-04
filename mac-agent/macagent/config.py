@@ -66,6 +66,12 @@ class Settings:
     router_batch_ms: int = field(default_factory=lambda: _int("RELAY_ROUTER_BATCH_MS", 1200))
     router_max_wait_ms: int = field(default_factory=lambda: _int("RELAY_ROUTER_MAX_WAIT_MS", 4000))
     max_workers: int = field(default_factory=lambda: _int("RELAY_WORKERS", 3))
+    # This server's own machine: "auto" (this Mac, or a virtual one with --fake-host) or "none" (a cloud loop
+    # that only drives machines through daemons).
+    local_host: str = field(default_factory=lambda: os.environ.get("RELAY_LOCAL_HOST", "auto"))
+    watchdog_interval_s: int = field(default_factory=lambda: _int("RELAY_WATCHDOG_INTERVAL_S", 300))
+    watchdog_stall_s: int = field(default_factory=lambda: _int("RELAY_WATCHDOG_STALL_S", 900))
+    watchdog_restart: bool = field(default_factory=lambda: _bool("RELAY_WATCHDOG_RESTART", False))
 
     # Guard rails.
     policy: str = field(default_factory=lambda: os.environ.get("RELAY_POLICY", "balanced"))  # careful|balanced|autonomous

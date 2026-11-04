@@ -63,6 +63,26 @@ class ControlIn(BaseModel):
     direction: str | None = None
     amount: int | None = None
     force: bool = False
+    machine: str | None = None
+
+
+class PolicyIn(BaseModel):
+    text: str = Field(min_length=3, max_length=2000)
+    enabled: bool = True
+
+
+class PolicyPatch(BaseModel):
+    text: str | None = Field(default=None, max_length=2000)
+    enabled: bool | None = None
+
+
+class MachineRegisterIn(BaseModel):
+    code: str = Field(min_length=4, max_length=20)
+    name: str = Field(min_length=1, max_length=60)
+
+
+class ProposalIn(BaseModel):
+    approve: bool
 
 
 class ChatIn(BaseModel):
@@ -91,7 +111,7 @@ def token_of(request: Request) -> str | None:
 
 
 def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=None, *, router=None,
-               triggers=None) -> FastAPI:
+               triggers=None, watchdog=None) -> FastAPI:
     limiter = RateLimiter(limit=8, window_s=60)  # pairing
     hook_limiter = RateLimiter(limit=60, window_s=60)
 
@@ -109,6 +129,8 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
         if triggers is not None:
             jobs.append(triggers.run())
         tasks = [asyncio.create_task(c) for c in jobs]
+        if watchdog is not None and watchdog.interval_s > 0:
+            watchdog.start_thread(asyncio.get_running_loop())
         yield
         for t in tasks:
             t.cancel()
@@ -126,7 +148,8 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
         return {
             "tasks": store.tasks(40),
             "approvals": store.pending_approvals(),
-            "host": agent.host.info(),
+            "host": agent.host.info() if agent.host else {"host": "none"},
+            "machines": agent.machines.status(),
             "current": agent.current,
             "running": sorted(agent.running),
             "screen_owner": agent.screen_owner,
@@ -134,6 +157,7 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
             "router": {"enabled": router is not None, "busy": bool(router and router.busy),
                        "model": settings.router_model},
             "workers": settings.max_workers,
+            "watchdog": (store.watchdog_log(("report",), 1) or [None])[-1],
             "settings": {"policy": settings.policy, "provider": settings.provider, "model": settings.model,
                          "effort": settings.effort, "can_see_screen": settings.can_see_screen,
                          "daily_cap_usd": settings.daily_cap_usd, "telegram": bool(settings.telegram_token),
@@ -214,19 +238,26 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
         return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
     # -- live screen & manual control -------------------------------------------------
+    def machine_host(name: str | None):
+        h = agent.machines.host(name)
+        if h is None:
+            raise HTTPException(409, f"{name or 'that machine'} is offline.")
+        return h
+
     @app.get("/api/screen")
-    async def screen(_d: dict = Depends(device)) -> Response:
-        s = await agent.host.screenshot()
+    async def screen(machine: str | None = None, _d: dict = Depends(device)) -> Response:
+        s = await machine_host(machine).screenshot()
         return Response(s.data, media_type=s.media_type, headers={"Cache-Control": "no-store",
                                                                    "X-Width": str(s.width), "X-Height": str(s.height)})
 
     @app.post("/api/control")
     async def control(body: ControlIn, d: dict = Depends(device)) -> dict:
-        if agent.screen_busy():
+        mname = body.machine or agent.machines.default
+        if agent.screen_busy(mname):
             if not body.force:
                 raise HTTPException(409, "A task is using the screen. Take over (pauses it) to control manually.")
-            agent.pause(agent.screen_owner)
-        h = agent.host
+            agent.pause(agent.screen_owners[mname])
+        h = machine_host(mname)
         a = body.action
         if a in {"click", "double_click", "right_click"}:
             await h.click(body.x, body.y, "right" if a == "right_click" else "left", 2 if a == "double_click" else 1,
@@ -310,6 +341,141 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
             raise HTTPException(404, "Unknown hook or wrong secret.")
         return {"ok": True}
 
+    # -- the filter: incoming events, policies, code rules --------------------------------
+    @app.get("/api/incoming")
+    def incoming(limit: int = 60, _d: dict = Depends(device)) -> list[dict]:
+        rows = store.incoming_list(min(limit, 300))
+        for r in rows:
+            r["payload"] = {k: v for k, v in r["payload"].items() if not k.startswith("_") or k in {"_reply", "_task_id"}}
+        return rows
+
+    @app.get("/api/policies")
+    def policies(_d: dict = Depends(device)) -> list[dict]:
+        return store.policies()
+
+    @app.post("/api/policies")
+    def add_policy(body: PolicyIn, d: dict = Depends(device)) -> dict:
+        pid = store.add_policy(body.text, by=d["name"], enabled=body.enabled)
+        return store.one("SELECT * FROM policies WHERE id=?", (pid,))
+
+    @app.patch("/api/policies/{policy_id}")
+    def patch_policy(policy_id: int, body: PolicyPatch, _d: dict = Depends(device)) -> dict:
+        if body.text is not None:
+            store.x("UPDATE policies SET text=? WHERE id=?", (body.text.strip(), policy_id))
+        if body.enabled is not None:
+            store.x("UPDATE policies SET enabled=? WHERE id=?", (1 if body.enabled else 0, policy_id))
+        row = store.one("SELECT * FROM policies WHERE id=?", (policy_id,))
+        if row is None:
+            raise HTTPException(404, "No such policy.")
+        return row
+
+    @app.delete("/api/policies/{policy_id}")
+    def delete_policy(policy_id: int, _d: dict = Depends(device)) -> dict:
+        store.x("DELETE FROM policies WHERE id=?", (policy_id,))
+        return {"ok": True}
+
+    @app.get("/api/filter/rules")
+    def filter_rules(_d: dict = Depends(device)) -> dict:
+        if router is None:
+            raise HTTPException(404, "No router.")
+        return router.filter.rules()
+
+    @app.put("/api/filter/rules")
+    def put_filter_rules(body: dict, _d: dict = Depends(device)) -> dict:
+        if router is None:
+            raise HTTPException(404, "No router.")
+        return router.filter.set_rules(body)
+
+    # -- machines (bring your own machine) -------------------------------------------------
+    @app.get("/api/machines")
+    def machines(_d: dict = Depends(device)) -> list[dict]:
+        return agent.machines.status()
+
+    @app.post("/api/machines/pairing-code")
+    def machine_code(request: Request, _d: dict = Depends(device)) -> dict:
+        code = new_pairing_code(store)
+        base = f"{request.url.scheme}://{request.url.netloc}"
+        return {"code": code, "expires_in": 600,
+                "command": f"python -m macagent daemon --server {base} --name <machine-name> --code {code}"}
+
+    @app.post("/api/machines/register")
+    def machine_register(body: MachineRegisterIn, request: Request) -> dict:
+        ip = request.client.host if request.client else "?"
+        if not limiter.allow(ip):
+            raise HTTPException(429, "Too many attempts; wait a minute.")
+        from .auth import _h
+
+        code = body.code.strip().upper().replace("-", "")
+        row = store.one("SELECT * FROM pairing_codes WHERE code_hash=?", (_h(code),))
+        if not row or row["used"] or row["expires_at"] < time.time() or \
+                store.x("UPDATE pairing_codes SET used=1 WHERE code_hash=? AND used=0", (_h(code),)).rowcount != 1:
+            raise HTTPException(403, "That code is wrong, used, or expired.")
+        try:
+            return {"token": agent.machines.register(body.name), "name": body.name.strip()}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.delete("/api/machines/{name}")
+    def revoke_machine(name: str, _d: dict = Depends(device)) -> dict:
+        agent.machines.revoke(name)
+        return {"ok": True}
+
+    @app.websocket("/api/machines/ws")
+    async def machine_ws(sock: WebSocket) -> None:
+        name = agent.machines.machine_for_token(sock.query_params.get("token"))
+        if name is None:
+            await sock.close(code=4401)
+            return
+        await sock.accept()
+        lock = asyncio.Lock()
+
+        async def send(msg: dict) -> None:
+            async with lock:
+                await sock.send_json(msg)
+
+        host = None
+        try:
+            hello = await sock.receive_json()
+            host = agent.machines.attach(name, send, (hello or {}).get("info") or {})
+            agent.bus.publish({"type": "machine", "name": name, "online": True})
+            agent.wake.set()
+            while True:
+                host.resolve(await sock.receive_json())
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            if host is not None:
+                agent.machines.detach(name, host)
+                agent.bus.publish({"type": "machine", "name": name, "online": False})
+
+    # -- the Watchdog ---------------------------------------------------------------------
+    @app.get("/api/watchdog")
+    def watchdog_state(_d: dict = Depends(device)) -> dict:
+        return {"enabled": watchdog is not None, "reports": store.watchdog_log(("report",), 5),
+                "chat": store.watchdog_log(("chat_user", "chat_watchdog"), 40),
+                "proposals": store.proposals(), "guidance": store.get("worker_guidance")}
+
+    @app.post("/api/watchdog/check")
+    async def watchdog_check(_d: dict = Depends(device)) -> dict:
+        if watchdog is None:
+            raise HTTPException(404, "Watchdog is off.")
+        return await watchdog.check()
+
+    @app.post("/api/watchdog/chat")
+    async def watchdog_chat(body: ChatIn, _d: dict = Depends(device)) -> dict:
+        if watchdog is None:
+            raise HTTPException(404, "Watchdog is off.")
+        return await watchdog.chat(body.text)
+
+    @app.post("/api/watchdog/proposals/{proposal_id}")
+    def decide_proposal(proposal_id: int, body: ProposalIn, _d: dict = Depends(device)) -> dict:
+        if watchdog is None:
+            raise HTTPException(404, "Watchdog is off.")
+        try:
+            return watchdog.apply(proposal_id, body.approve)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     # -- settings, devices, memory ---------------------------------------------------
     @app.put("/api/settings")
     def put_settings(body: SettingsIn, _d: dict = Depends(device)) -> dict:
@@ -356,15 +522,19 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
             return
         await sock.accept()
         q = agent.bus.subscribe()
-        viewer: dict[str, Any] = {"on": False, "interval": 1.0}
+        viewer: dict[str, Any] = {"on": False, "interval": 1.0, "machine": None}
 
         async def frames() -> None:
             while True:
                 if viewer["on"]:
                     try:
-                        s = await agent.host.screenshot()
+                        h = agent.machines.host(viewer["machine"])
+                        if h is None:
+                            raise RuntimeError(f"{viewer['machine'] or 'the machine'} is offline")
+                        s = await h.screenshot()
                         await sock.send_json({"type": "frame", "w": s.width, "h": s.height, "media_type": s.media_type,
-                                              "data": base64.b64encode(s.data).decode(), "busy": agent.screen_busy(),
+                                              "data": base64.b64encode(s.data).decode(),
+                                              "busy": agent.screen_busy(viewer["machine"]), "machine": viewer["machine"],
                                               "ts": time.time()})
                     except Exception as exc:  # permissions missing, display asleep
                         await sock.send_json({"type": "frame_error", "error": str(exc)})
@@ -377,6 +547,7 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
                 if msg.get("type") == "screen":
                     viewer["on"] = bool(msg.get("on"))
                     viewer["interval"] = max(0.4, min(5.0, float(msg.get("interval", 1.0))))
+                    viewer["machine"] = msg.get("machine") or None
 
         jobs = [asyncio.create_task(frames()), asyncio.create_task(reader())]
         try:
