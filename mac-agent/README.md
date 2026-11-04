@@ -34,6 +34,7 @@ reach it and it opens its own.
 | **9 Full duplex, one voice per channel** | `job_start()` returns `Started [J3]` at once. The result arrives later as a message (full output → `read(O…)`), and the worker keeps answering in the meantime; `job_stop()` ends a job. Chat replies are capped at **100 words**. |
 | **10 Compute, state, environments** | Sessions live in SQLite. After a restart, interrupted workers **resume** from their history (up to 3 times). Other machines run `python -m macagent daemon`, which connects out to the server, keeps no session state, and executes host operations. A task targets a machine, and if that machine sleeps, only that task waits. `RELAY_LOCAL_HOST=none` runs the loop on a server with no screen of its own. |
 | **11 Watchdog** | `watchdog.py` runs on its own thread and event loop, on a schedule. It checks liveness (event-loop heartbeat, database, model errors, offline machines, failing triggers) and progress (code heuristics for repeated actions or failures and stalls, then a light model judges moving / stuck / drifting). It nudges a stuck worker, and pauses it if it's still stuck after the nudge. Ask it "why did #12 keep retrying?"; it can propose policy, guidance or trigger changes that apply only when you tap Apply. |
+| **12 The whole design** | Tasks → **System** draws the note's "five modules on one page" with live counts: where work happens (each source and its filter mode) → two-stage filter (code admitted, sent to the model, kept, noise dropped) → router (dispatched, ignored; runs no tools) → workers (live, silent, their jobs and threads), with the followed-thread bypass, replies per channel, your Macs, the Watchdog and the session database. Tap a module to open it. One column on a phone, the whiteboard layout on a wide screen. Served by `GET /api/system?hours=`. |
 | **13 Open problems** | Security is still the big one; see *Limits* below. |
 
 ## What it does
@@ -274,6 +275,7 @@ virtual desktop. They cover:
   - resume after a restart, and the daemon over a real WebSocket;
   - Watchdog nudge → pause → proposal → apply;
   - Telegram group mentions and threads;
+  - the System map's counts for every module;
 - the router batching a burst into one light-model call with no Mac tools,
   dispatching, reporting back, answering questions but never approvals, and
   its no-model fallback;

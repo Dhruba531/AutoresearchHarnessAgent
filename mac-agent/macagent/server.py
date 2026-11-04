@@ -448,6 +448,38 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
                 agent.machines.detach(name, host)
                 agent.bus.publish({"type": "machine", "name": name, "online": False})
 
+    # -- the one-page system map ---------------------------------------------------------
+    @app.get("/api/system")
+    def system_map(hours: float = 24, _d: dict = Depends(device)) -> dict:
+        """Every module of the design on one page, with live counts (the console's System view)."""
+        since = time.time() - max(0.25, min(hours, 24 * 30)) * 3600
+        stats = store.system_stats(since)
+        trig: dict[str, int] = {}
+        for t in store.triggers(enabled_only=True):
+            trig[t["kind"]] = trig.get(t["kind"], 0) + 1
+        workers = []
+        for tid in sorted(agent.running):
+            t = store.task(tid)
+            if t:
+                workers.append({"id": tid, "title": t["title"], "status": t["status"], "mode": t.get("mode") or "normal",
+                                "machine": t.get("machine") or agent.machines.default, "steps": t["steps"],
+                                "threads": store.threads_of(tid), "jobs": len(agent.live_jobs(tid)),
+                                "on_screen": agent.screen_owner == tid})
+        report = (store.watchdog_log(("report",), 1) or [None])[-1]
+        return {
+            **stats,
+            "channels": {"web": True, "telegram": bool(settings.telegram_token)},
+            "modes": router.filter.rules()["sources"] if router else {},
+            "triggers": trig,
+            "policies": len(store.policies(enabled_only=True)),
+            "router": {"enabled": router is not None, "busy": bool(router and router.busy),
+                       "model": settings.router_model},
+            "workers": {"live": workers, "max": settings.max_workers},
+            "machines": agent.machines.status(),
+            "watchdog": {"enabled": watchdog is not None, "interval_s": watchdog.interval_s if watchdog else 0,
+                         "report": report},
+        }
+
     # -- the Watchdog ---------------------------------------------------------------------
     @app.get("/api/watchdog")
     def watchdog_state(_d: dict = Depends(device)) -> dict:

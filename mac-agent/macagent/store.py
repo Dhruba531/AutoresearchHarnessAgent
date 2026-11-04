@@ -10,6 +10,7 @@ import json
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 SCHEMA = """
@@ -312,6 +313,56 @@ class Store:
         now = time.time()
         wid = int(self.x("INSERT INTO watchdog(kind,data,created_at) VALUES(?,?,?)", (kind, json.dumps(data, default=str), now)).lastrowid)
         return {"id": wid, "kind": kind, "data": data, "created_at": now}
+
+    def system_stats(self, since: float) -> dict:
+        """Counts for the one-page system map: what came in, what each stage did, what the database holds."""
+        def base(src: str) -> str:
+            head = src.split(":", 1)[0]
+            return head if head != "trigger" else src  # keep trigger:<kind> apart
+        sources: dict[str, int] = {}
+        flow = {"events": 0, "code_admit": 0, "candidates": 0, "model_admit": 0, "dropped": 0, "passed": 0,
+                "routed": 0, "dispatched": 0, "ignored": 0, "waiting": 0}
+        for r in self.all("SELECT source, kind, payload, stage, verdicts FROM incoming WHERE created_at>?", (since,)):
+            outside = r["kind"] in ("message", "trigger")  # worker reports and task ends skip the filter
+            stage = r["stage"]
+            flow["routed"] += stage == "routed"
+            flow["waiting"] += stage == "new"
+            if outside:
+                src = r["source"]
+                if src.startswith("trigger"):
+                    kind = (json.loads(r["payload"] or "{}") or {}).get("_trigger_kind")
+                    src = f"trigger:{kind}" if kind else "trigger"
+                sources[base(src)] = sources.get(base(src), 0) + 1
+                flow["events"] += 1
+                flow["dropped"] += stage == "dropped"
+                flow["passed"] += stage == "passed"
+            for v in json.loads(r["verdicts"] or "[]"):
+                by, verdict = v.get("by"), v.get("verdict")
+                if by == "code" and not outside:
+                    continue
+                if by == "code" and verdict == "admit":
+                    flow["code_admit"] += 1
+                elif by == "code" and verdict == "candidate":
+                    flow["candidates"] += 1
+                elif by == "model" and verdict == "admit":
+                    flow["model_admit"] += 1
+                elif by == "router" and verdict == "dispatch":
+                    flow["dispatched"] += 1
+                elif by == "router" and verdict == "ignore":
+                    flow["ignored"] += 1
+        replies: dict[str, int] = {}
+        for r in self.all("SELECT channel, COUNT(*) AS n FROM chat WHERE role='relay' AND created_at>? GROUP BY channel",
+                          (since,)):
+            ch = r["channel"].split(":", 1)[0]
+            replies[ch] = replies.get(ch, 0) + r["n"]
+        reports = self.one("SELECT COUNT(*) AS n FROM events WHERE kind='report' AND created_at>?", (since,))["n"]
+        count = lambda t: self.one(f"SELECT COUNT(*) AS n FROM {t}")["n"]  # noqa: E731 - fixed table names only
+        size = sum(f.stat().st_size for f in (Path(self.path), Path(self.path + "-wal")) if f.exists())
+        return {"since": since, "sources": sources, "flow": flow, "replies": replies, "reports": reports,
+                "db": {"tasks": count("tasks"), "events": count("events"), "incoming": count("incoming"),
+                       "objects": count("objects"), "memories": count("memories"), "bytes": size,
+                       "resumed": self.one("SELECT COUNT(*) AS n FROM tasks WHERE resume_count>0")["n"]},
+                "threads": self.one("SELECT COUNT(DISTINCT thread) AS n FROM subscriptions")["n"]}
 
     def watchdog_log(self, kinds: tuple[str, ...], limit: int = 50) -> list[dict]:
         marks = ",".join("?" * len(kinds))

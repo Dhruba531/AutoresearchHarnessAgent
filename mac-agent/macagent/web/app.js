@@ -12,7 +12,7 @@ const S = {
   state: null, view: "chat", taskId: null, task: null, events: [],
   chat: [], routerBusy: false, chatDraft: "", triggers: null,
   seg: "tasks", incoming: [], wd: null, wdDraft: "", policies: null, rules: null, machineCode: null, policyDraft: "",
-  screenMachine: null,
+  screenMachine: null, sys: null, sysHours: 24,
   trig: { kind: "folder", name: "", instruction: "", path: "~/Downloads", pattern: "*", query: "", minutes: 15, battery: "", disk: "" },
   ws: null, connected: false, retry: 0,
   frame: null, frameErr: "", mode: "click", mods: new Set(), lastTap: null, takeover: false,
@@ -64,6 +64,7 @@ function connect() {
 }
 
 function onMessage(m) {
+  if (m.type !== "frame" && m.type !== "frame_error") touchSystem();
   if (m.type === "hello") { S.state = m.state; S.routerBusy = !!m.state.router?.busy; render(); loadChat(); return; }
   if (!S.state) return;
   if (m.type === "frame") {
@@ -130,6 +131,13 @@ function onMessage(m) {
 
 async function loadIncoming() { try { S.incoming = await api("/api/incoming?limit=80"); render(); } catch {} }
 async function loadWatchdog() { try { S.wd = await api("/api/watchdog"); render(); } catch {} }
+async function loadSystem() { try { S.sys = await api(`/api/system?hours=${S.sysHours}`); render(); } catch {} }
+// While the System map is open, any live update re-reads it (at most every 1.5 s).
+let sysTimer = null;
+function touchSystem() {
+  if (S.view !== "tasks" || S.seg !== "system" || sysTimer) return;
+  sysTimer = setTimeout(() => { sysTimer = null; loadSystem(); }, 1500);
+}
 
 async function loadChat() {
   try { S.chat = await api("/api/chat"); render(); if (S.view === "chat") scrollTo(0, document.body.scrollHeight); } catch {}
@@ -161,6 +169,7 @@ function render() {
   }
   const img = document.getElementById("screen-img");
   if (img && S.frame) img.src = `data:${S.frame.media_type};base64,${S.frame.data}`;
+  drawWires();
 }
 
 function shell() {
@@ -169,7 +178,7 @@ function shell() {
     : S.view === "tasks" ? viewHome() : viewChat();
   const composer = S.view === "chat" ? composerChat() : S.view === "tasks" && S.seg === "tasks" ? composerHome() : S.view === "task" ? composerTask() : "";
   return `
-    <main class="page ${composer ? "" : "no-composer"}">${body}</main>
+    <main class="page ${composer ? "" : "no-composer"} ${S.view === "tasks" && S.seg === "system" ? "wide" : ""}">${body}</main>
     ${composer}
     <nav class="tabs">
       ${tab("chat", "💬", "Chat", pending)}${tab("tasks", "◉", "Tasks", (S.state.running || []).length)}${tab("screen", "▢", "Screen")}${tab("settings", "⚙", "Settings")}
@@ -234,7 +243,7 @@ function runningCard(cur) {
 }
 
 function segTabs() {
-  return `<div class="seg" style="margin:-6px 0 14px">${[["tasks", "Tasks"], ["events", "Events"], ["watchdog", "Watchdog"]].map(([k, l]) =>
+  return `<div class="seg" style="margin:-6px 0 14px">${[["tasks", "Tasks"], ["events", "Events"], ["watchdog", "Watchdog"], ["system", "System"]].map(([k, l]) =>
     `<button class="${S.seg === k ? "on" : ""}" data-act="seg" data-id="${k}">${l}</button>`).join("")}</div>`;
 }
 
@@ -280,6 +289,151 @@ function viewWatchdog() {
       <button class="btn primary">Ask</button></form>`;
 }
 
+// ---------------------------------------------------------------- the system map
+// The design note's "five modules on one page", drawn from live counts: where work
+// happens → two-stage filter → router → workers, with replies per channel, the
+// machines that run commands, the Watchdog, and the session database.
+
+const SOURCE_LABEL = {
+  web: "Phone app", telegram: "Telegram", "telegram-group": "Telegram groups", "trigger:mail": "Mail",
+  "trigger:folder": "Folders", "trigger:calendar": "Calendar", "trigger:webhook": "Webhooks",
+  "trigger:schedule": "Schedules", "trigger:system": "Mac status", trigger: "Triggers", router: "Workers", system: "System",
+};
+const TRIGGER_SOURCE = { mail: "trigger:mail", folder: "trigger:folder", calendar: "trigger:calendar", webhook: "trigger:webhook",
+  schedule: "trigger:schedule", system: "trigger:system" };
+
+function sysSources(x) {
+  const rows = new Map();
+  const add = (key, on) => { if (!rows.has(key)) rows.set(key, { key, n: 0, on }); if (on) rows.get(key).on = true; };
+  add("web", true);
+  add("telegram", x.channels.telegram);
+  if (x.channels.telegram) add("telegram-group", true);
+  for (const k of Object.keys(x.triggers)) add(TRIGGER_SOURCE[k] || "trigger:" + k, true);
+  for (const [k, n] of Object.entries(x.sources)) { add(k, false); rows.get(k).n = n; }
+  const mode = (k) => x.modes[k] || x.modes[k.split(":")[0]] || "candidate";
+  return [...rows.values()].filter((r) => r.on || r.n).map((r) => ({ ...r, label: SOURCE_LABEL[r.key] || r.key, mode: mode(r.key) }));
+}
+
+function sysBox(elId, cls, inner, act = "", id = "") {
+  const tag = act ? "button" : "div";
+  return `<${tag} class="sys-box ${cls}" id="${elId}" ${act ? `data-act="${act}" data-id="${esc(id)}"` : ""}>${inner}</${tag}>`;
+}
+
+function viewSystem() {
+  const x = S.sys;
+  if (!x) return `<p class="muted">Loading…</p>`;
+  const f = x.flow, admitted = f.code_admit + f.model_admit;
+  const span = { 1: "last hour", 24: "last 24 h", 168: "last 7 days" }[S.sysHours] || `last ${S.sysHours} h`;
+  const n = (v) => `<b>${v}</b>`;
+  const sources = sysSources(x).map((r) => `<button class="sys-src ${r.n ? "" : "off"}" data-act="tab" data-id="settings"
+      data-wire="src" title="${esc(r.label)}: ${esc(r.mode)}"><span class="grow ellipsis">${esc(r.label)}</span>
+      <span class="sys-n">${r.n}</span><span class="sys-mode m-${esc(r.mode)}">${esc(r.mode)}</span></button>`).join("");
+  const live = x.workers.live;
+  const workers = live.length ? live.map((w) => `<button class="sys-box sys-worker" data-act="open" data-id="${w.id}" data-wire="worker">
+      <div class="sys-title">Worker #${w.id}${w.on_screen ? ` <span class="pill running">screen</span>` : ""}${
+        w.mode === "silent" ? ` <span class="pill discarded">silent</span>` : ""}</div>
+      <div class="sys-sub ellipsis">${esc(w.title)}</div>
+      <div class="sys-meta">own context, tools · ${w.steps} steps${w.jobs ? ` · ${w.jobs} job${w.jobs > 1 ? "s" : ""}` : ""}${
+        w.threads.length ? ` · ${w.threads.length} thread${w.threads.length > 1 ? "s" : ""}` : ""} · ${esc(w.machine || "")}</div></button>`).join("")
+    : `<div class="sys-box sys-worker idle" data-wire="worker"><div class="sys-title">No worker running</div>
+      <div class="sys-meta">up to ${x.workers.max} in parallel, each with its own context and tools</div></div>`;
+  const rep = x.watchdog.report, infra = rep ? Object.values(rep.data.infra) : [];
+  const bad = infra.filter((v) => v !== "ok").length, stuck = rep ? rep.data.progress.filter((p) => p.verdict !== "moving").length : 0;
+  const wdState = !x.watchdog.enabled ? "off" : !rep ? "no check yet" : bad || stuck ? `${bad + stuck} problem${bad + stuck > 1 ? "s" : ""}` : "all ok";
+  const machines = x.machines.map((m) => `<span class="sys-mach"><span class="dot ${m.online ? "on" : ""}"></span>${esc(m.name)}<span class="muted"> · ${m.kind}</span></span>`).join("");
+  const replies = Object.entries(x.replies);
+  const mb = (b) => b > 1e6 ? (b / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1e3)) + " KB";
+  return `<div class="row spread" style="margin:-4px 2px 10px"><span class="muted small">Five modules on one page · ${esc(span)}</span>
+      <div class="seg sys-span">${[[1, "1h"], [24, "24h"], [168, "7d"]].map(([h, l]) =>
+        `<button class="${S.sysHours === h ? "on" : ""}" data-act="sys-hours" data-id="${h}">${l}</button>`).join("")}</div></div>
+    <div class="sys" id="sys">
+      <svg class="sys-wires" id="sys-wires" aria-hidden="true"></svg>
+      <div class="sys-area a-src" id="sys-src"><div class="sys-cap">where work happens</div>${sources}</div>
+      ${sysBox("sys-filter", "a-filter", `<div class="sys-title">Two-stage filter</div><div class="sys-meta">code, then a model</div>
+        <div class="sys-stats">${n(f.events)} in · code admitted ${n(f.code_admit)} · ${n(f.candidates)} to the model → ${n(f.model_admit)} kept</div>
+        <div class="sys-meta">${x.policies} polic${x.policies === 1 ? "y" : "ies"} on</div>`, "seg", "events")}
+      ${sysBox("sys-noise", "a-noise", `<div class="sys-title bad">noise</div><div class="sys-stats">${n(f.dropped)} dropped</div>`, "seg", "events")}
+      <div class="sys-area a-thread" id="sys-thread"><span>followed thread: code passes it straight through</span>
+        <b>${f.passed}</b><span class="muted"> · ${x.threads} thread${x.threads === 1 ? "" : "s"} followed</span></div>
+      ${sysBox("sys-router", "a-router", `<div class="sys-title big">Router</div><div class="sys-meta">long-lived, light model · ${esc(x.router.model || "")}</div>
+        <div class="sys-warn">runs no tools</div>
+        <div class="sys-stats">${n(f.dispatched)} dispatched · ${n(f.ignored)} ignored${f.waiting ? ` · ${n(f.waiting)} waiting` : ""}</div>
+        <div class="sys-meta"><span class="dot ${x.router.busy ? "busy" : x.router.enabled ? "on" : ""}"></span> ${x.router.enabled ? x.router.busy ? "thinking" : "idle" : "off"}</div>`,
+        "tab", "chat")}
+      ${sysBox("sys-replies", "a-replies", `<div class="sys-title">Replies, per channel</div><div class="sys-stats">${
+        replies.length ? replies.map(([c, k]) => `${esc(SOURCE_LABEL[c] || c)} ${n(k)}`).join(" · ") : "none yet"}</div>
+        <div class="sys-meta">one voice · ≤100 words in chat</div>`, "tab", "chat")}
+      <div class="sys-area a-workers" id="sys-workers"><div class="sys-cap">${live.length}/${x.workers.max} workers · ${x.reports} report${x.reports === 1 ? "" : "s"} to the router<span class="sys-thread-m"> · ${f.passed} passed through on followed threads</span></div>${workers}</div>
+      ${sysBox("sys-machines", "a-machines", `<div class="sys-title">Your Macs</div><div class="sys-meta">daemon: runs commands, returns results</div>
+        <div class="sys-machs">${machines || `<span class="muted">none</span>`}</div>`, "tab", "settings")}
+      ${sysBox("sys-watchdog", `a-watchdog ${bad || stuck ? "alert" : ""}`, `<div class="sys-title accent">Watchdog</div><div class="sys-meta">alive? making progress?</div>
+        <div class="sys-stats">${esc(wdState)}${rep ? ` · ${esc(ago(rep.created_at))}` : ""}</div>
+        <div class="sys-meta">${!x.watchdog.enabled ? "off" : x.watchdog.interval_s ? `every ${fmtDur(x.watchdog.interval_s)}, own thread` : "checks on demand"}</div>`,
+        "seg", "watchdog")}
+      <div class="sys-area a-cloud" id="sys-cloud"><div class="sys-cap">stateless agent loop</div>
+        <div class="sys-box sys-db"><div class="sys-title">Session database</div>
+        <div class="sys-stats">${n(x.db.tasks)} tasks · ${n(x.db.events)} steps · ${n(x.db.incoming)} events · ${n(x.db.objects)} spilled · ${n(x.db.memories)} memories</div>
+        <div class="sys-meta">${mb(x.db.bytes)} · ${x.db.resumed} task${x.db.resumed === 1 ? "" : "s"} resumed after a restart</div></div></div>
+    </div>
+    <p class="muted small" style="text-align:center;margin-top:12px">Tap a module to open it.</p>`;
+}
+
+// Wires are measured from where the boxes actually landed, so the same code draws
+// the phone's single column and the wide whiteboard layout.
+function drawWires() {
+  const svg = document.getElementById("sys-wires"), root = document.getElementById("sys");
+  if (!svg || !root) return;
+  const R = root.getBoundingClientRect();
+  const box = (el) => { const r = el.getBoundingClientRect();
+    return { l: r.left - R.left, r: r.right - R.left, t: r.top - R.top, b: r.bottom - R.top, cx: (r.left + r.right) / 2 - R.left, cy: (r.top + r.bottom) / 2 - R.top }; };
+  const $ = (id) => document.getElementById(id);
+  const out = [];
+  const path = (d, cls = "", label = "", lx = 0, ly = 0) => {
+    out.push(`<path d="${d}" class="${cls}" marker-end="url(#sys-arrow)"/>`);
+    if (label) out.push(`<text x="${lx}" y="${ly}" class="sys-lbl">${esc(label)}</text>`);
+  };
+  // the edge pair facing each other, joined with a smooth curve; `off` shifts it sideways
+  // so two wires between the same boxes stay apart
+  const link = (a, b, cls = "", label = "", off = 0) => {
+    const A = box(a), B = box(b);
+    let x1, y1, x2, y2, horiz;
+    if (B.l >= A.r - 2) { horiz = true; x1 = A.r; y1 = A.cy + off; x2 = B.l; y2 = B.cy + off; }
+    else if (B.r <= A.l + 2) { horiz = true; x1 = A.l; y1 = A.cy + off; x2 = B.r; y2 = B.cy + off; }
+    else if (B.t >= A.b - 2) { x1 = A.cx + off; y1 = A.b; x2 = B.cx + off; y2 = B.t; }
+    else { x1 = A.cx + off; y1 = A.t; x2 = B.cx + off; y2 = B.b; }
+    const k = horiz ? Math.max(20, Math.abs(x2 - x1) / 2) : Math.max(14, Math.abs(y2 - y1) / 2);
+    const d = horiz ? `M${x1},${y1} C${x1 + Math.sign(x2 - x1) * k},${y1} ${x2 - Math.sign(x2 - x1) * k},${y2} ${x2},${y2}`
+      : `M${x1},${y1} C${x1},${y1 + Math.sign(y2 - y1) * k} ${x2},${y2 - Math.sign(y2 - y1) * k} ${x2},${y2}`;
+    path(d, cls, label, (x1 + x2) / 2 + 6, (y1 + y2) / 2 - 4);
+  };
+  const filter = $("sys-filter"), router = $("sys-router"), workersArea = $("sys-workers");
+  const workers = [...workersArea.querySelectorAll("[data-wire=worker]")];
+  const wide = matchMedia("(min-width: 820px)").matches;
+  if (wide) for (const s of root.querySelectorAll("[data-wire=src]")) link(s, filter, "thin");
+  else link($("sys-src"), filter);
+  link(filter, $("sys-noise"), "noise");
+  link(filter, router);
+  link(router, $("sys-replies"));
+  if (wide) workers.forEach((w) => link(router, w));
+  else link(router, workersArea, "", "", -24);
+  link(wide ? workers[0] : workersArea, router, "dash", "report", wide ? 22 : 24);
+  link(workers[workers.length - 1], $("sys-machines"));
+  link($("sys-watchdog"), workersArea, "dash");
+  // the followed-thread bypass: around the router, straight from the filter to the workers
+  const F = box(filter), W = box(workersArea), T = box($("sys-thread"));
+  if (wide) {
+    const y = T.cy;
+    path(`M${F.cx},${F.t} C${F.cx},${y} ${F.cx + 40},${y} ${(F.cx + W.cx) / 2},${y} S${W.cx},${y} ${W.cx},${W.t}`, "dash thread");
+  } else {
+    const x = Math.min(F.l, W.l) - 9;
+    path(`M${F.l},${F.cy} C${x},${F.cy} ${x},${F.cy} ${x},${F.cy + 16} L${x},${W.t + 10} C${x},${W.t + 22} ${x},${W.t + 22} ${W.l},${W.t + 22}`, "dash thread");
+  }
+  svg.setAttribute("viewBox", `0 0 ${R.width} ${R.height}`);
+  svg.innerHTML = `<defs><marker id="sys-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z"/></marker></defs>${out.join("")}`;
+}
+addEventListener("resize", () => drawWires());
+
 function viewHome() {
   const st = S.state, run = new Set(st.running || []);
   const live = st.tasks.filter((t) => run.has(t.id));
@@ -288,6 +442,7 @@ function viewHome() {
   const recent = tasks.filter((t) => t.status !== "scheduled").slice(0, 25);
   if (S.seg === "events") return `${header("Activity")}${segTabs()}${viewEvents()}`;
   if (S.seg === "watchdog") return `${header("Activity")}${segTabs()}${viewWatchdog()}`;
+  if (S.seg === "system") return `${header("System")}${segTabs()}${viewSystem()}`;
   return `${header("Tasks")}${segTabs()}
     <p class="muted small" style="margin:-2px 4px 12px">${st.workers} workers in parallel · ${st.screen_owner ? `screen: task #${st.screen_owner}` : "screen free"}</p>
     ${live.map(runningCard).join("")}
@@ -647,7 +802,8 @@ $app.addEventListener("click", async (e) => {
         if (S.state.screen_owner) await api(`/api/tasks/${S.state.screen_owner}/pause`, { method: "POST" });
         S.state.screen_busy = false; toast("You have control"); return;
       case "mode": S.mode = id; render(); return;
-      case "seg": S.seg = id; render(); if (id === "events") loadIncoming(); if (id === "watchdog") loadWatchdog(); return;
+      case "seg": S.seg = id; render(); if (id === "events") loadIncoming(); if (id === "watchdog") loadWatchdog(); if (id === "system") loadSystem(); return;
+      case "sys-hours": S.sysHours = Number(id); return loadSystem();
       case "wd-check": toast("Checking…"); await api("/api/watchdog/check", { method: "POST" }); return loadWatchdog();
       case "prop-yes": case "prop-no":
         await api(`/api/watchdog/proposals/${n}`, { method: "POST", body: { approve: act === "prop-yes" } });

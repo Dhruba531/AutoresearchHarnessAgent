@@ -173,3 +173,73 @@ textarea.answer, .field { width: 100%; border-radius: 12px; border: 1px solid va
 .pill.discarded { background: var(--panel-2); color: var(--muted); }
 button.pill { border: 0; cursor: pointer; }
 .seg button:disabled { opacity: .45; }
+
+/* -- the system map: the design note's five modules on one page ----------------------- */
+.page.wide { max-width: 1180px; }
+.sys-span { flex: 0 0 auto; }
+.sys-span button { min-height: 30px; padding: 0 12px; font-size: 13px; }
+.sys { position: relative; display: grid; gap: 22px 12px; padding: 4px 0 4px 16px;
+       grid-template-columns: minmax(0, 1fr) minmax(0, .75fr);
+       grid-template-areas: "src src" "filter noise" "router replies" "workers workers"
+                            "machines watchdog" "cloud cloud"; }
+.sys > * { position: relative; z-index: 1; min-width: 0; }
+.sys > .sys-wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; z-index: 0; }
+.sys-wires path { fill: none; stroke: var(--muted); stroke-width: 1.4; }
+.sys-wires path.thin { stroke-width: 1; opacity: .55; }
+.sys-wires path.dash { stroke-dasharray: 5 4; }
+.sys-wires path.thread { stroke: var(--accent); }
+.sys-wires path.noise { stroke: var(--bad); opacity: .7; }
+.sys-wires marker path { fill: var(--muted); stroke: none; }
+.sys-lbl { font: 11px var(--mono); fill: var(--muted); }
+.a-src { grid-area: src; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; align-content: start; }
+.a-src .sys-cap { grid-column: 1 / -1; }
+.a-filter { grid-area: filter; } .a-noise { grid-area: noise; } .a-router { grid-area: router; }
+.a-replies { grid-area: replies; } .a-thread { grid-area: thread; } .a-workers { grid-area: workers; }
+.a-machines { grid-area: machines; } .a-watchdog { grid-area: watchdog; } .a-cloud { grid-area: cloud; }
+.sys-cap { font: 11px var(--mono); color: var(--muted); letter-spacing: .02em; margin-bottom: 2px; }
+.sys-box { display: block; width: 100%; text-align: left; background: var(--panel); color: var(--text);
+           border: 1.5px solid color-mix(in srgb, var(--text) 55%, transparent); border-radius: 6px; padding: 10px 12px; }
+button.sys-box:hover, .sys-src:hover { border-color: var(--accent); }
+.sys-title { font: 600 14px var(--mono); }
+.sys-title.big { font-size: 18px; }
+.sys-title.bad { color: var(--bad); }
+.sys-title.accent { color: var(--accent); }
+.sys-sub { font-size: 13px; margin-top: 2px; }
+.sys-meta { font: 11px var(--mono); color: var(--muted); margin-top: 3px; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.sys-stats { font-size: 12.5px; margin-top: 6px; }
+.sys-warn { font: 11px var(--mono); color: var(--bad); margin-top: 6px; }
+.sys-src { display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 6px 8px; font: 12.5px var(--mono);
+           background: var(--panel); border: 1.5px solid color-mix(in srgb, var(--text) 55%, transparent); border-radius: 6px; text-align: left; }
+.sys-src.off { opacity: .5; border-style: dashed; }
+.sys-n { font-weight: 700; }
+.sys-mode { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--panel-2); color: var(--muted); }
+.sys-mode.m-admit { background: var(--ok-bg); color: var(--ok); }
+.sys-mode.m-ignore { background: var(--bad-bg); color: var(--bad); }
+.sys-mode.m-explicit { background: var(--warn-bg); color: var(--warn); }
+.a-noise { border-style: dashed; align-self: center; }
+.a-thread { font: 11.5px var(--mono); color: var(--accent); padding-left: 4px; }
+.a-thread > * { background: var(--bg); }
+.a-thread { display: none; }
+.sys-thread-m { color: var(--accent); }
+.a-workers > .sys-cap { order: 99; }  /* on a phone the wires come in from above */
+.a-workers { display: grid; gap: 10px; align-content: start; }
+.sys-worker.idle { border-style: dashed; opacity: .75; }
+.sys-worker .pill { font-size: 10px; padding: 1px 6px; vertical-align: 1px; }
+.sys-machs { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 12.5px; }
+.sys-mach { display: inline-flex; align-items: center; gap: 6px; }
+.a-watchdog.alert { border-color: var(--bad); }
+.a-cloud { border: 1.5px solid color-mix(in srgb, var(--text) 55%, transparent); border-radius: 6px; padding: 10px; }
+.sys-db { border-style: solid; }
+@media (min-width: 820px) {
+  .sys { padding: 4px 0; gap: 26px 52px; grid-template-columns: minmax(150px, .8fr) 1fr 1fr 1.15fr;
+         grid-template-areas: ". thread thread thread" "src filter router workers" "src noise replies workers"
+                              "cloud cloud machines watchdog"; }
+  .a-src { grid-template-columns: 1fr; align-self: center; }
+  .a-thread { display: block; text-align: center; padding: 0 0 8px; }
+  .sys-thread-m { display: none; }
+  .a-workers > .sys-cap { order: 0; }
+  .a-noise { align-self: start; width: 70%; justify-self: center; }
+  .a-filter, .a-router { align-self: end; }
+  .a-workers { align-self: center; }
+  .sys-title.big { font-size: 20px; }
+}

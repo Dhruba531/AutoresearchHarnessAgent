@@ -380,3 +380,46 @@ async def test_telegram_group_explicit_vs_candidate_and_threads(tmp_path):
     assert e2["payload"]["_explicit"] is True and e2["text"] == "what changed yesterday?"
     assert e3["thread"] == e1["thread"] == "tg:-100:10"  # a reply joins its message's Thread
     assert Filter(store).code(e1)[0] == "candidate" and Filter(store).code(e2)[0] == "admit"
+
+
+# The one-page system map: every module's live counts, from the same records the views use
+def test_system_map_counts_every_module(tmp_path):
+    def light(body):
+        txt = body["messages"][0]["content"]
+        ids = re.findall(r'\[E(\d+)\][^\n"]*"([^"\n]*)"', txt)
+        return [tool(f"v{i}", "verdict", {"event_id": f"E{i}", "admit": "lunch" not in t, "reason": "t"})
+                for i, t in ids], "tool_use"
+
+    settings, store, host, agent, router, wmock, lmock = build(tmp_path, lambda b: ([], "end_turn"), light)
+    router.human("telegram:-42", "lunch at 1?", "Riya", source="telegram-group:-42", explicit=False)
+    router.human("telegram:-42", "login fails on Android", "Priya", source="telegram-group:-42", explicit=False)
+    router.human("web", "what is on my calendar?", "me")
+    router.submit({"kind": "trigger", "source": "trigger:9", "sender": "noreply@shop.example", "text": "shipped",
+                   "trigger": {"id": 9, "name": "mail", "kind": "mail", "instruction": "triage"}})
+    asyncio.run(router.intake([store.incoming(i) for i in range(1, 5)]))
+    store.verdict(3, "router", "dispatch", "started W1", stage="routed", routed_to=[1])
+    store.add_chat("web", "relay", "On it.")
+    store.add_chat("telegram:-42", "relay", "Looking into the login bug.")
+    router.submit({"kind": "worker_report", "source": "worker:1", "text": "found it"})  # internal: not a source
+
+    app = create_app(settings, store, agent, router=router)
+    tid = store.create_task("Reproduce Android login bug", source="router", mode="silent")
+    store.subscribe("tg:-42:7", tid)
+    with TestClient(app) as c:
+        agent.running[tid] = None  # stand-in for a live worker: the map reads which tasks are live
+        assert c.get("/api/system").status_code == 401
+        token = c.post("/api/pair", json={"code": new_pairing_code(store), "name": "p"}).json()["token"]
+        c.headers.update({"Authorization": f"Bearer {token}"})
+        x = c.get("/api/system").json()
+        agent.running.pop(tid)
+    assert x["sources"] == {"telegram-group": 2, "web": 1, "trigger:mail": 1}
+    f = x["flow"]
+    assert (f["events"], f["code_admit"], f["candidates"], f["model_admit"], f["dropped"]) == (4, 1, 2, 1, 2)
+    assert (f["dispatched"], f["routed"]) == (1, 1)
+    assert x["replies"] == {"web": 1, "telegram": 1}
+    assert x["modes"]["telegram-group"] == "candidate" and x["policies"] == 3
+    w = x["workers"]["live"]
+    assert x["router"]["enabled"] and x["workers"]["max"] == 3 and len(w) == 1
+    assert (w[0]["id"], w[0]["mode"], w[0]["threads"], w[0]["machine"]) == (tid, "silent", ["tg:-42:7"], "this-mac")
+    assert x["threads"] == 1
+    assert x["machines"][0]["online"] and x["db"]["incoming"] == 5 and x["db"]["bytes"] > 0
