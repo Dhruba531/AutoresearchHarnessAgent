@@ -50,6 +50,9 @@ PROVIDERS: dict[str, dict] = {
               "main": "qwen3:8b", "fast": "qwen3:8b", "models": ["qwen3:8b", "qwen3:32b"],
               "note": "Free and private; slower and less capable.", "get_key": "https://ollama.com/download"},
 }
+ALIASES = {"gemini": "gemini", "google": "gemini", "deepseek": "deepseek", "openai": "openai", "gpt": "openai",
+           "chatgpt": "openai", "openrouter": "openrouter", "anthropic": "anthropic", "claude": "anthropic",
+           "local": "local", "ollama": "local", "qwen": "local"}
 DEFAULT_ORDER = ["gemini", "deepseek", "openai", "openrouter", "anthropic", "local"]
 
 # What "this key can't be used right now" looks like across providers.
@@ -204,6 +207,11 @@ class ModelManager:
             self.store.put("model_prefs", prefs)
             self.store.put("model_choice", {"provider": provider, "model": main, "router_model": fast})
 
+    def named(self, text: str) -> list[str]:
+        """Providers a phrase names, key or not ("open ai", "chatgpt" → openai)."""
+        t = " " + re.sub(r"[^a-z0-9.:/-]+", " ", text.lower()).replace("open ai", "openai") + " "
+        return list(dict.fromkeys(v for k, v in ALIASES.items() if f" {k} " in t or t.strip().startswith(k)))
+
     def resolve(self, text: str) -> tuple[str, str | None] | None:
         """A name as people say it ("gemini", "gpt nano", "opus", "local") → (provider, main model or None).
         Prefers providers you have a key for."""
@@ -217,10 +225,7 @@ class ModelManager:
         nick = {"opus": "opus", "sonnet": "sonnet", "haiku": "haiku", "nano": "nano", "mini": "mini",
                 "lite": "lite", "reasoner": "reasoner", "32b": "32b"}
         word = next((v for k, v in nick.items() if f" {k} " in t or f"-{k} " in t), None)
-        alias = {"gemini": "gemini", "google": "gemini", "deepseek": "deepseek", "openai": "openai", "gpt": "openai",
-                 "chatgpt": "openai", "openrouter": "openrouter", "anthropic": "anthropic", "claude": "anthropic",
-                 "local": "local", "ollama": "local", "qwen": "local"}
-        named = [v for k, v in alias.items() if f" {k} " in t or t.strip().startswith(k)]
+        named = self.named(text)
         if "claude" in t and "anthropic" not in usable and "openrouter" in usable:
             named = ["openrouter"] + named  # Claude through OpenRouter when there is no Anthropic key
         candidates = [p for p in dict.fromkeys(named) if p in usable] or (usable if word else [])

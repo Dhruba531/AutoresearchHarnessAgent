@@ -211,7 +211,7 @@ class Router:
         event.setdefault("at", time.time())
         payload = dict(event.get("payload") or {})
         payload["_reply"] = event.get("reply") or event.get("channel") or payload.get("_reply")
-        for k in ("explicit", "trigger", "task_id", "origin", "status"):
+        for k in ("explicit", "trigger", "task_id", "origin", "status", "switch"):
             if k in event:
                 payload[f"_{k}"] = event[k]
         if event.get("trigger"):
@@ -229,7 +229,13 @@ class Router:
         msg = self.store.add_chat(channel, "user", text, sender=sender)
         if channel == "web":
             self.agent.bus.publish({"type": "chat", "message": msg})
+        # "use openai", "switch to gemini", "change model to gpt nano": done in code, no model call needed.
+        # Only in the owner's own chats (the app, a private Telegram chat), never a group.
+        switch = None
+        if self.models is not None and (source or channel).split(":", 1)[0] in {"web", "telegram"}:
+            switch = self.switch_request(text)
         self.submit({"kind": "message", "source": source or channel, "reply": channel, "text": text, "sender": sender,
+                     **({"switch": list(switch)} if switch else {}),
                      "explicit": explicit, "thread": thread})
         return msg
 
@@ -264,6 +270,50 @@ class Router:
                     break
             await self.handle([self.store.incoming(i) for i in batch])
 
+    SWITCH_RE = re.compile(
+        r"^\s*(?:please\s+|pls\s+|ok\s+|now\s+)?(?:use|switch(?:\s+over)?(?:\s+(?:to|the\s+model\s+to|model\s+to))?|"
+        r"change(?:\s+(?:the\s+)?model)?(?:\s+to)?|go\s+back\s+to|set(?:\s+(?:the\s+)?model)?(?:\s+to)?|"
+        r"try|move\s+to)\s+(?:the\s+)?(?P<name>[\w .:/-]+?)(?:\s+(?:model|api|key|instead|please|now))*\s*[.!]?\s*$", re.I)
+
+    def switch_request(self, text: str) -> tuple[str, str | None] | None:
+        """A short "use X" / "switch to X" message naming a model you have a key for, else None.
+        Longer sentences ("use gemini to summarise this") are left to the router."""
+        m = self.SWITCH_RE.match(text or "")
+        if not m or len(m.group("name").split()) > 3:
+            return None
+        hit = self.models.resolve(m.group("name"))
+        if hit is None and self.models.named(m.group("name")):
+            return ("?", self.models.named(m.group("name"))[0])  # a real provider, but no key for it yet
+        return hit
+
+    async def direct_switches(self, batch: list[dict]) -> list[dict]:
+        rest = []
+        for e in batch:
+            sw = (e.get("payload") or {}).get("_switch")
+            to = (e.get("payload") or {}).get("_reply")
+            if e["kind"] != "message" or not sw or self.models is None:
+                rest.append(e)
+                continue
+            try:
+                if sw[0] == "?":
+                    from .models import PROVIDERS
+
+                    p = PROVIDERS[sw[1]]
+                    raise ValueError(
+                        f"{p['label']} isn't set up yet: add its key in the Relay app (Settings → Models → "
+                        f"{p['label']} → paste → Save), then say “use {sw[1]}” again. Get a key: {p['get_key']}"
+                        if p["env"] else f"{p['label']} isn't running on the Mac: install and open Ollama first.")
+                self.models.use(sw[0], sw[1])
+                self.agent.bus.publish({"type": "models"})
+                a = self.models.status()["active"]
+                note = (f"Now using {a['label']}: tasks on {a['model'].split('/')[-1]}, "
+                        f"chat on {a['router_model'].split('/')[-1]}.")
+            except ValueError as exc:
+                note = str(exc)
+            await self.send(to, note)
+            self.store.verdict(e["id"], "router", "switched model", note[:120], stage="routed")
+        return rest
+
     @staticmethod
     def _urgent(ev: dict | None) -> bool:
         if not ev:
@@ -294,7 +344,7 @@ class Router:
         self.batches += 1
         self._busy(True)
         try:
-            batch = await self.direct_results(batch)
+            batch = await self.direct_switches(await self.direct_results(batch))
             if not batch:
                 return
             admitted = await self.intake(batch)

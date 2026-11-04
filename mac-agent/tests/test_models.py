@@ -313,7 +313,7 @@ async def test_switch_by_name_in_telegram_and_by_asking(tmp_path, clean_env):
     router = Router(settings, store, agent, light.router_adapter, None, models=m)
     from macagent.router import WebChannel
     router.add_channel(WebChannel(store, agent))
-    router.human("web", "go back to claude", "me")
+    router.human("web", "could you put me back on claude for the next few tasks", "me")  # long: the router decides
     await router.handle([store.incoming(e["id"]) for e in store.incoming_list(1)])
     assert settings.provider == "openrouter"
     assert "can switch to:" in light.requests[0]["messages"][0]["content"]
@@ -323,3 +323,32 @@ async def test_switch_by_name_in_telegram_and_by_asking(tmp_path, clean_env):
                    "trigger": {"id": 1, "name": "m", "kind": "webhook", "instruction": "triage"}})
     await router.handle([store.incoming(store.incoming_list(1)[0]["id"])])
     assert settings.provider == "gemini"
+
+
+@pytest.mark.asyncio
+async def test_plain_switch_requests_are_handled_in_code(tmp_path, clean_env):
+    from macagent.router import Router, WebChannel
+    from tests.mock_claude import MockClaude
+
+    settings, store, m = make(tmp_path)  # OpenRouter key only
+    m.set_key("gemini", "AIzaSyD-secret-gemini-key-9876")
+    agent = Agent(settings, store, FakeHost(), lambda: None)
+    light = MockClaude(lambda b: ([{"type": "text", "text": "router reply"}], "end_turn"))
+    router = Router(settings, store, agent, light.router_adapter, None, models=m)
+    router.add_channel(WebChannel(store, agent))
+
+    async def say(text, source=None):
+        router.human("web", text, "me", source=source)
+        await router.handle([store.incoming(store.incoming_list(1)[0]["id"])])
+        return [c["text"] for c in store.chat("web") if c["role"] == "relay"][-1]
+
+    assert (await say("use gemini")).startswith("Now using Gemini") and settings.provider == "gemini"
+    assert "Now using OpenRouter" in await say("switch to claude")
+    assert "chat on" in await say("Change model to flash lite please")
+    assert settings.model == "gemini-3.5-flash-lite"
+    reply = await say("use open ai")  # no OpenAI key yet: say how to add one
+    assert "OpenAI isn't set up yet" in reply and "platform.openai.com" in reply and settings.provider == "gemini"
+    assert light.requests == []  # none of these needed the model
+    await say("use gemini to summarise my last email")  # a task, not a switch: goes to the router
+    assert len(light.requests) == 1
+    assert router.switch_request("use gemini") and not router.switch_request("I like gemini")
