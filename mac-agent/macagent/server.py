@@ -137,6 +137,8 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
             settings.policy = saved["policy"]
         if saved.get("effort"):
             settings.effort = saved["effort"]
+        if isinstance(saved.get("daily_cap_usd"), (int, float)):
+            settings.daily_cap_usd = float(saved["daily_cap_usd"])  # set from Telegram with /cap
         agent.start()
         jobs = list(extra_startup() if extra_startup else [])
         if router is not None:

@@ -13,6 +13,11 @@ obeyed; everything else is ignored.
   /stop           → cancel the running task
   /model          → see which model runs, and switch with one tap; /model gemini (or nano, opus, local…)
                     switches by name, and so does just asking ("use gemini")
+  /mac            → battery, disk, uptime, the app in front, model and spend
+  /get name       → send yourself a file from the Mac (or send me a file: it lands in Downloads)
+  /clip · /copy   → read the Mac's clipboard, or put text on it
+  /open Safari    → open an app · /lock → lock the screen
+  /spend · /cap 2 → today's cost per provider · set the daily cap
   /app            → a one-time link that opens the full Relay app (inside Telegram, or any browser)
   approvals       → Approve / Deny buttons; questions → reply with the answer
 
@@ -36,12 +41,13 @@ import httpx
 
 from .agent import Agent
 from .auth import _h, new_pairing_code  # pairing codes are stored hashed
+from .tgcommands import Commands
 from .store import Store
 
 log = logging.getLogger("relay.telegram")
 
 
-class TelegramBot:
+class TelegramBot(Commands):
     """Both an inbound source and a router channel ("telegram:<chat id>")."""
 
     name = "telegram"
@@ -59,7 +65,8 @@ class TelegramBot:
         self.app_url, self.public = (app_url or "").rstrip("/") or None, public  # for /app
         self.me: dict | None = None
         self.roots: dict[tuple[int, int], int] = {}  # (chat, message) → root message of its reply chain
-        self.typing: dict[int, asyncio.Task] = {}  # chat → "typing…" kept alive until Relay answers
+        self.typing: dict[int, asyncio.Task] = {}
+        self.file_choices: dict[int, list[str]] = {}  # chat → files offered by /get  # chat → "typing…" kept alive until Relay answers
 
     # -- plumbing --------------------------------------------------------------------
     async def call(self, method: str, **params) -> dict:
@@ -104,7 +111,11 @@ class TelegramBot:
     async def say(self, chat_id: int, text: str, **kw) -> dict:
         return await self.call("sendMessage", chat_id=chat_id, text=text[:4000], **kw)
 
-    COMMANDS = [("app", "Open the full Relay app"), ("model", "Which model runs; tap to switch"), ("status", "What's running and waiting for you"),
+    COMMANDS = [("app", "Open the full Relay app"), ("model", "Which model runs; tap to switch"),
+                ("mac", "Battery, disk, uptime, the app in front"), ("get", "Send me a file: /get name"),
+                ("clip", "What's on the Mac's clipboard"), ("copy", "Put text on the clipboard: /copy text"),
+                ("open", "Open an app: /open Safari"), ("lock", "Lock the Mac's screen"),
+                ("spend", "Today's cost; /cap 2 sets the daily cap"), ("status", "What's running and waiting for you"),
                 ("tasks", "Recent tasks"), ("screen", "A screenshot of the Mac"), ("stop", "Stop the running task"),
                 ("help", "What I can do")]
 
@@ -139,6 +150,10 @@ class TelegramBot:
         chat = (msg.get("chat") or {}).get("id")
         group = (msg.get("chat") or {}).get("type") in {"group", "supergroup"}
         text = (msg.get("text") or "").strip()
+        if chat and not text and (msg.get("document") or msg.get("photo")):
+            if self.authorized(chat) and not group:
+                await self.receive_file(chat, msg)
+            return
         if not chat or not text:
             return
         if text.startswith("/pair"):
@@ -185,6 +200,8 @@ class TelegramBot:
             return await self.say(chat, f"Stopping {len(running)} task(s)." if running else "Nothing is running.")
         if text == "/screen":
             return await self.send_screen(chat)
+        if text.startswith("/") and await self.command(chat, text, group):
+            return
         if self.router is not None:
             name = (msg.get("from") or {}).get("first_name") or "user"
             if group:
@@ -256,6 +273,9 @@ class TelegramBot:
         if not chat or not self.authorized(chat):
             return await self.call("answerCallbackQuery", callback_query_id=q["id"])
         data = q.get("data", "")
+        if data.startswith("f:"):
+            note = await self.on_file_choice(chat, data[2:])
+            return await self.call("answerCallbackQuery", callback_query_id=q["id"], text=note[:190])
         if data.startswith("m:") and self.models is not None:
             try:
                 self.models.use(data[2:])
