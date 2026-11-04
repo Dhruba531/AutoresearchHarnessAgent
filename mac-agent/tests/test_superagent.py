@@ -78,11 +78,14 @@ async def test_router_batches_dispatches_and_reports_back(tmp_path):
     loop = asyncio.create_task(router.run())
     for text in ("book the dentist", "thursday morning", "it's Dr. Lee"):  # a burst, one batch
         router.human("web", text, "iPhone")
-    await until(lambda: any(m["text"].startswith("Your dentist") for m in store.chat("web")))
+    await until(lambda: any(m["text"].startswith("Booked Thursday") for m in store.chat("web")))
     loop.cancel()
     await agent.stop()
 
-    assert len(rmock.requests) == 2  # one call for the three messages, one for the finished task
+    # one call for the three messages; the worker's answer reaches the user as written, with no second call
+    assert len(rmock.requests) == 1
+    finished = [e for e in store.incoming_list() if e["kind"] == "task_finished"][0]
+    assert [(v["by"], v["verdict"]) for v in finished["verdicts"]] == [("router", "relayed")]
     first = rmock.requests[0]
     assert first["model"] == "claude-haiku-5-5"
     assert "tools" in first and {"type": "computer_toolset_20260801"} not in first["tools"]
@@ -153,7 +156,7 @@ async def test_router_fallback_without_a_model(tmp_path):
     loop.cancel()
     await agent.stop()
     texts = [m["text"] for m in store.chat("web") if m["role"] == "relay"]
-    assert texts[0].startswith("On it — task #") and texts[1].startswith("✅")
+    assert texts[0].startswith("On it — task #") and texts[1] == "Cleaned 12 files."  # relayed directly
 
 
 @pytest.mark.asyncio

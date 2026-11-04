@@ -45,6 +45,7 @@ from .store import Store
 
 log = logging.getLogger("relay.router")
 CHAT_WORD_CAP = 100
+URGENT_GAP_MS = 60  # a person's message or a worker's result: route almost at once
 MAX_READ_HOPS = 3
 
 ROUTER_SYSTEM = """You are the router of Relay, a personal agent that runs on the user's Mac. You are the single voice: \
@@ -56,7 +57,7 @@ For each batch of admitted events, decide and act only through tool calls:
 - reply: answer the user. Chat replies: at most 100 words, plain, like a good colleague; ask only for decisions.
 - dispatch_task: hand work to a worker. Workers see none of this conversation, so write complete, self-contained \
 instructions (names, dates, files, preferences from memory); list the event IDs it handles so it follows their \
-Threads. One task per independent job; never duplicate a task that is running or queued. Use mode "silent" to act \
+Threads. One task per independent job; never duplicate a task that is running or queued. Set quick: true for simple lookups and one- or two-step actions with no screen (calendar, a file, a mail search, a shell command, battery or disk) so the answer comes back fast; leave it off for multi-step work or anything on the screen. Use mode "silent" to act \
 ahead when nobody asked but a policy says to (the worker reports only if it confirms something worth saying). \
 Pick a machine when the work needs a specific one.
 - message_task: add a detail to a task, or follow up on a finished one so it continues with its context.
@@ -97,6 +98,9 @@ ROUTER_TOOLS = [
                           events={"type": "array", "items": {"type": "string"}, "description": "event IDs it handles, e.g. ['E12']", "opt": True},
                           to=_s("channel to report the result to; default: where the request came from", True),
                           mode={"type": "string", "enum": ["normal", "silent"], "opt": True},
+                          quick={"type": "boolean", "opt": True,
+                                 "description": "true for a lookup or a one- or two-step action that needs no "
+                                                "screen: it runs on the fast model and answers sooner"},
                           machine=_s("machine name, if the work needs a specific one", True),
                           run_at=_s("ISO 8601 local time to start, if not now", True),
                           repeat={"type": "string", "enum": ["hourly", "daily", "weekdays", "weekly"], "opt": True})},
@@ -237,9 +241,13 @@ class Router:
         while True:
             first = await self.queue.get()
             batch = [first]
-            deadline = time.monotonic() + self.settings.router_max_wait_ms / 1000
+            # A person waiting for an answer, or a worker's result, goes at once: only events that are
+            # already queued join it. Triggers and team-chat chatter still wait to be batched.
+            urgent = self._urgent(self.store.incoming(first))
+            gap = URGENT_GAP_MS if urgent else self.settings.router_batch_ms
+            deadline = time.monotonic() + (URGENT_GAP_MS if urgent else self.settings.router_max_wait_ms) / 1000
             while True:
-                left = min(self.settings.router_batch_ms / 1000, deadline - time.monotonic())
+                left = min(gap / 1000, deadline - time.monotonic())
                 if left <= 0:
                     break
                 try:
@@ -248,10 +256,39 @@ class Router:
                     break
             await self.handle([self.store.incoming(i) for i in batch])
 
+    @staticmethod
+    def _urgent(ev: dict | None) -> bool:
+        if not ev:
+            return False
+        if ev["kind"] in {"task_finished", "worker_report"}:
+            return True
+        return ev["kind"] == "message" and bool((ev.get("payload") or {}).get("_explicit"))
+
+    async def direct_results(self, batch: list[dict]) -> list[dict]:
+        """A finished task's answer goes straight to the person who asked, by code: no model call to
+        rephrase it. Failures, silent work and anything addressed to several channels still go to the model."""
+        if not self.settings.direct_results:
+            return batch
+        rest = []
+        for e in batch:
+            p = e.get("payload") or {}
+            task = self.store.task(int(p["_task_id"])) if e["kind"] == "task_finished" and p.get("_task_id") else None
+            to = p.get("_reply")
+            if (task and task["status"] == "done" and (task.get("result") or "").strip()
+                    and task.get("mode") != "silent" and to in self._targets()):
+                await self.send(to, task["result"].strip(), task_id=task["id"])
+                self.store.verdict(e["id"], "router", "relayed", "result sent as is", stage="routed")
+            else:
+                rest.append(e)
+        return rest
+
     async def handle(self, batch: list[dict]) -> None:
         self.batches += 1
         self._busy(True)
         try:
+            batch = await self.direct_results(batch)
+            if not batch:
+                return
             admitted = await self.intake(batch)
             if admitted:
                 await self.route(admitted)
@@ -378,6 +415,8 @@ class Router:
             ch = self.channels.get(base)
             if ch:
                 body = cap_words(text, CHAT_WORD_CAP, task_id) if base in CHAT_CHANNELS else text
+                if base != "web":  # the web channel records its own; keep the others in the conversation too
+                    self.store.add_chat(t, "relay", body, task_id)
                 try:
                     await ch.send(t, body, task_id=task_id, notify=notify)
                 except Exception:
@@ -486,7 +525,7 @@ class Router:
                             "\n\n".join(render_event(self.store, e) for e in events)
         tid = self.agent.submit(instructions, source=f"router:{primary}", origin=to, title=inp.get("title"),
                                 run_at=run_at, repeat=inp.get("repeat"), mode=inp.get("mode") or "normal",
-                                machine=inp.get("machine") or None)
+                                machine=inp.get("machine") or None, quick=bool(inp.get("quick")))
         for e in events:
             if e.get("thread"):
                 self.store.subscribe(e["thread"], tid)

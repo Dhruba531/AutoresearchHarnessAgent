@@ -92,7 +92,7 @@ curl -fsSL https://raw.githubusercontent.com/Dhruba531/AutoresearchHarnessAgent/
 
 It downloads Relay into `~/Relay` (and a private Python 3.12 via `uv` if the
 Mac has no Python 3.10+), installs it, asks for your API key once — Anthropic,
-OpenRouter, OpenAI or DeepSeek, or `local` for a free model on the Mac via Ollama
+OpenRouter, Gemini, OpenAI or DeepSeek, or `local` for a free model on the Mac via Ollama
 (hidden as you paste it, saved in `~/.relay/env` with owner-only access),
 checks permissions, starts Relay at login, shares it over Tailscale if you're
 signed in, and prints a pairing code and QR code for your phone. Run the same
@@ -225,6 +225,8 @@ notifications.
 | `RELAY_MODEL` | `claude-opus-5-5` | or `claude-sonnet-5-5` (faster and cheaper) |
 | `RELAY_EFFORT` | `medium` | `low`…`xhigh`; also settable from the phone |
 | `RELAY_PROVIDER` | `anthropic` | `openrouter` / `openai` / `deepseek`: native Mac tools only, no screen clicking (Claude's computer-use toolset needs an Anthropic key) |
+| `GEMINI_API_KEY` (`RELAY_PROVIDER=gemini`) | — | Gemini 3.8 Flash for tasks, 3.5 Flash-Lite for chat: low cost and fast. Native Mac tools, no screen clicking |
+| `RELAY_DIRECT_RESULTS` | `1` | a finished task's answer goes to you as the worker wrote it, without a second router call (failures and silent work still go through the router) |
 | `RELAY_PROVIDER=local`, `RELAY_LOCAL_URL` | `http://127.0.0.1:11434/v1` | a model on this Mac through any OpenAI-compatible server (Ollama by default; LM Studio is `http://127.0.0.1:1234/v1`). Free, private, no key; default model `qwen3:8b`, set `RELAY_MODEL` for another. Small local models are noticeably weaker at long multi-step tasks |
 | `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY` | — | for those providers. OpenRouter defaults to `anthropic/claude-opus-5.5` for tasks and `anthropic/claude-haiku-5.5` for chat; set `RELAY_MODEL` / `RELAY_ROUTER_MODEL` to any OpenRouter model id |
 | `RELAY_ROUTER_MODEL` | `claude-haiku-5-5` | the light routing model (`deepseek-chat` with DeepSeek) |

@@ -25,8 +25,10 @@ die() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
 # Local model: Ollama serves an OpenAI-compatible API on 127.0.0.1:11434.
 setup_ollama() {
-  local model
-  model="$(grep '^RELAY_MODEL=' "$ENV_FILE" | cut -d= -f2- || true)"; model="${model:-qwen3:8b}"
+  local model tuned
+  # the base model: RELAY_LOCAL_MODEL=qwen3:32b in front of the command picks a bigger one
+  model="${RELAY_LOCAL_MODEL:-$(grep '^RELAY_LOCAL_MODEL=' "$ENV_FILE" | cut -d= -f2- || true)}"; model="${model:-qwen3:8b}"
+  tuned="relay-$(printf '%s' "$model" | tr ':/' '--')"
   OLLAMA="$(command -v ollama || true)"
   [ -n "$OLLAMA" ] || { [ -x /Applications/Ollama.app/Contents/Resources/ollama ] && OLLAMA=/Applications/Ollama.app/Contents/Resources/ollama; } || true
   if [ -z "$OLLAMA" ]; then
@@ -40,10 +42,20 @@ setup_ollama() {
     echo "  Model $model is ready."
   else
     say "Downloading $model (about 5 GB, once)"
-    "$OLLAMA" pull "$model" </dev/null || echo "  Download failed; run: ollama pull $model"
+    "$OLLAMA" pull "$model" </dev/null || { echo "  Download failed; run: ollama pull $model"; return 0; }
   fi
-  echo "  Tip: a 16 GB Mac mini runs $model well. With 32 GB or more, a bigger model is smarter:"
-  echo "  add RELAY_MODEL=qwen3:32b to $ENV_FILE, run this again."
+  # Ollama's default 4k context is nearly full with Relay's tools before the first tool result, which makes
+  # it slow and wrong. Build a copy with a 16k window (a few MB on disk; the weights are shared).
+  MF="$(mktemp)"; printf 'FROM %s\nPARAMETER num_ctx 16384\n' "$model" > "$MF"
+  if "$OLLAMA" create "$tuned" -f "$MF" </dev/null >/dev/null 2>&1; then
+    put RELAY_LOCAL_MODEL "$model"; put RELAY_MODEL "$tuned"; put RELAY_ROUTER_MODEL "$tuned"
+    echo "  Model $tuned ready (16k context, kept loaded so replies start fast)."
+  else
+    echo "  Could not build $tuned; using $model with Ollama's default context."
+  fi
+  rm -f "$MF"
+  echo "  Tip: a 16 GB Mac mini runs $model well. With 32 GB or more, a bigger model is smarter: put"
+  echo "  RELAY_LOCAL_MODEL=qwen3:32b in front of bash in the install line."
 }
 
 # Everything runs inside main(), so a half-downloaded script runs nothing and no
@@ -102,6 +114,7 @@ main() {
   if [ -n "${ANTHROPIC_API_KEY:-}" ]; then put ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"; fi
   if [ -n "${OPENROUTER_API_KEY:-}" ]; then put OPENROUTER_API_KEY "$OPENROUTER_API_KEY"; put RELAY_PROVIDER openrouter; fi
   if [ -n "${OPENAI_API_KEY:-}" ]; then put OPENAI_API_KEY "$OPENAI_API_KEY"; put RELAY_PROVIDER openai; fi
+  if [ -n "${GEMINI_API_KEY:-}" ]; then put GEMINI_API_KEY "$GEMINI_API_KEY"; put RELAY_PROVIDER gemini; fi
   if [ -n "${DEEPSEEK_API_KEY:-}" ]; then put DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"; grep -q '^RELAY_PROVIDER=' "$ENV_FILE" || put RELAY_PROVIDER deepseek; fi
   # an OpenRouter key that an older version of this script filed as DeepSeek
   OLD="$(grep '^DEEPSEEK_API_KEY=sk-or-' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
@@ -110,10 +123,10 @@ main() {
     put OPENROUTER_API_KEY "$OLD"; put RELAY_PROVIDER openrouter; echo "  Moved your OpenRouter key to OPENROUTER_API_KEY."
   fi
   unset OLD
-  if [ "${RELAY_PROVIDER:-}" = local ]; then put RELAY_PROVIDER local; fi
-  if ! grep -qE '^(ANTHROPIC|DEEPSEEK|OPENAI|OPENROUTER)_API_KEY=.+|^RELAY_PROVIDER=local$' "$ENV_FILE"; then
+  case "${RELAY_PROVIDER:-}" in anthropic|openrouter|gemini|openai|deepseek|local) put RELAY_PROVIDER "$RELAY_PROVIDER" ;; esac
+  if ! grep -qE '^(ANTHROPIC|DEEPSEEK|OPENAI|OPENROUTER|GEMINI)_API_KEY=.+|^RELAY_PROVIDER=local$' "$ENV_FILE"; then
     (: < /dev/tty) 2>/dev/null || die "No API key and no terminal to ask in. Re-run with ANTHROPIC_API_KEY=sk-ant-… in front of the command."
-    echo "  Paste an API key (Anthropic sk-ant-…, OpenRouter sk-or-…, OpenAI or DeepSeek),"
+    echo "  Paste an API key (Anthropic sk-ant-…, OpenRouter sk-or-…, Gemini AIza…, OpenAI or DeepSeek),"
     echo "  or type  local  to run a free model on this Mac with Ollama (nothing leaves the Mac)."
     printf 'Key or local (not shown): '
     read -rs KEY < /dev/tty || die "Could not read the key."; echo
@@ -121,6 +134,8 @@ main() {
     case "$KEY" in
       local|LOCAL|Local) put RELAY_PROVIDER local ;;
       sk-ant-*) put ANTHROPIC_API_KEY "$KEY"; put RELAY_PROVIDER anthropic ;;
+      AIza*) put GEMINI_API_KEY "$KEY"; put RELAY_PROVIDER gemini
+         echo "  Saved as a Gemini key: Gemini 3.8 Flash for tasks, 3.5 Flash-Lite for chat (fast and low cost)." ;;
       sk-or-*) put OPENROUTER_API_KEY "$KEY"; put RELAY_PROVIDER openrouter
          echo "  Saved as an OpenRouter key: Claude Opus 5.5 for tasks, Haiku 5.5 for chat. Through OpenRouter Relay"
          echo "  uses native Mac tools (apps, files, shell, Mail, Calendar), not screen clicking; that needs an Anthropic key." ;;
@@ -139,6 +154,11 @@ main() {
         echo "  (apps, files, shell, Mail, Calendar), not screen clicking; that needs an Anthropic key." ;;
     esac
     unset KEY
+  fi
+  if ! grep -q '^RELAY_PROVIDER=local$' "$ENV_FILE"; then
+    # leaving local: its model names mean nothing to a cloud provider
+    grep -vE '^RELAY_(ROUTER_)?MODEL=relay-' "$ENV_FILE" > "$ENV_FILE.tmp" || true
+    mv "$ENV_FILE.tmp" "$ENV_FILE"; chmod 600 "$ENV_FILE"
   fi
   if grep -q '^RELAY_PROVIDER=local$' "$ENV_FILE"; then
     say "Using a local model (Ollama)"

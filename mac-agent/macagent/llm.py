@@ -20,6 +20,7 @@ OpenAICompatAdapter serves DeepSeek and OpenAI with the native tools only.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -38,6 +39,9 @@ PRICES = {
     "claude-haiku-5-5": (0.10, 0.50, 0.01), "claude-fable-5-1": (10.0, 50.0, 0.25), "claude-opus-5": (5.0, 25.0, 0.50),
     "deepseek-chat": (0.28, 0.42, 0.028), "deepseek-reasoner": (0.28, 0.42, 0.028),
     "gpt-4.1": (2.0, 8.0, 0.5), "gpt-4.1-mini": (0.4, 1.6, 0.1),
+    "gpt-5.4-mini": (0.75, 4.50, 0.075), "gpt-5.4-nano": (0.20, 1.25, 0.02),
+    # Gemini: 3.8 Flash at its standard rate (the lower introductory rate ends 2026-12-31), so the cap errs safe
+    "gemini-3.8-flash": (1.50, 7.50, 0.15), "gemini-3.5-flash-lite": (0.30, 2.50, 0.03),
 }
 
 FEATURES = {
@@ -158,6 +162,8 @@ class OpenAICompatAdapter:
                  base_url: str | None = None):
         self.provider, self.model, self.key = provider, model, api_key
         self.base = (base_url or BASE_URLS.get(provider, BASE_URLS["openai"])).rstrip("/")
+        m = model.lower()
+        self.reasoning = "low" if (provider == "gemini" or m.startswith(("gpt-5", "o3", "o4"))) else ""
         self.transport = transport
 
     @staticmethod
@@ -171,7 +177,8 @@ class OpenAICompatAdapter:
             if msg["role"] == "assistant":
                 text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
                 calls = [{"id": b["id"], "type": "function",
-                          "function": {"name": b["name"], "arguments": json.dumps(b.get("input", {}))}}
+                          "function": {"name": b["name"], "arguments": json.dumps(b.get("input", {}))},
+                          **({"extra_content": b["extra_content"]} if b.get("extra_content") else {})}
                          for b in content if b.get("type") == "tool_use"]
                 m: dict[str, Any] = {"role": "assistant", "content": text or None}
                 if calls:
@@ -193,13 +200,18 @@ class OpenAICompatAdapter:
         return out
 
     async def step(self, system: str, history: list[dict], tools: list[dict]) -> Turn:
-        body = {
+        if self.provider == "local" and "qwen3" in self.model.lower():
+            system += "\n/no_think"  # Qwen3 thinks at length by default; a personal agent needs quick answers
+        body: dict[str, Any] = {
             "model": self.model,
             "messages": self._messages(system, history),
             "tools": [{"type": "function", "function": {"name": t["name"], "description": t["description"],
                                                         "parameters": t["input_schema"]}} for t in tools],
-            "max_tokens": 8192,
         }
+        # GPT-5-era models take max_completion_tokens; everyone else max_tokens
+        body["max_completion_tokens" if self.provider == "openai" else "max_tokens"] = 8192
+        if self.reasoning:
+            body["reasoning_effort"] = self.reasoning  # low: answer fast instead of thinking long
         try:
             async with httpx.AsyncClient(timeout=600, transport=self.transport) as http:
                 headers = {"Authorization": f"Bearer {self.key}"}
@@ -208,6 +220,9 @@ class OpenAICompatAdapter:
                 r = await http.post(f"{self.base}/chat/completions", json=body, headers=headers)
         except httpx.HTTPError as exc:
             raise LLMError(f"Could not reach {self.provider}: {exc}") from exc
+        if r.status_code == 400 and "reasoning" in r.text and self.reasoning:
+            self.reasoning = ""  # this model has no reasoning control: stop sending it
+            return await self.step(system.removesuffix("\n/no_think"), history, tools)
         if r.status_code != 200:
             raise LLMError(f"{self.provider} error {r.status_code}: {r.text[:300]}")
         data = r.json()
@@ -223,7 +238,11 @@ class OpenAICompatAdapter:
                 args = json.loads(call["function"].get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {"_unparsed": call["function"].get("arguments")}
-            content.append({"type": "tool_use", "id": call["id"], "name": call["function"]["name"], "input": args})
+            block = {"type": "tool_use", "id": call.get("id") or f"call_{len(content)}", "name": call["function"]["name"],
+                     "input": args}
+            if call.get("extra_content"):  # Gemini 3's thought signature: must go back with the next turn
+                block["extra_content"] = call["extra_content"]
+            content.append(block)
         usage = data.get("usage") or {}
         tin, tout = int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
         hit = int(usage.get("prompt_cache_hit_tokens", 0))
@@ -239,7 +258,8 @@ class OpenAICompatAdapter:
 
 
 BASE_URLS = {"deepseek": "https://api.deepseek.com", "openai": "https://api.openai.com/v1",
-             "openrouter": "https://openrouter.ai/api/v1"}
+             "openrouter": "https://openrouter.ai/api/v1",
+             "gemini": "https://generativelanguage.googleapis.com/v1beta/openai"}
 
 
 def _compat_key(settings) -> str:
@@ -265,4 +285,20 @@ def make_adapter(settings) -> ClaudeAdapter | OpenAICompatAdapter:
                                base_url=settings.local_base_url if settings.provider == "local" else None)
 
 
-__all__ = ["ClaudeAdapter", "OpenAICompatAdapter", "Turn", "LLMError", "make_adapter", "cost", "time"]
+async def keep_warm(settings, every_s: float = 240, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    """Ollama unloads an idle model after 5 minutes, and reloading it costs seconds on every first message.
+    Ask it to keep Relay's models loaded (an empty generate loads without generating)."""
+    if settings.provider != "local" or ":11434" not in settings.local_base_url:
+        return
+    native = settings.local_base_url.rstrip("/").removesuffix("/v1")
+    async with httpx.AsyncClient(timeout=120, transport=transport) as http:
+        while True:
+            for m in dict.fromkeys([settings.model, settings.router_model]):
+                try:
+                    await http.post(f"{native}/api/generate", json={"model": m, "keep_alive": "30m"})
+                except httpx.HTTPError:
+                    pass  # Ollama not running yet; doctor explains
+            await asyncio.sleep(every_s)
+
+
+__all__ = ["keep_warm", "ClaudeAdapter", "OpenAICompatAdapter", "Turn", "LLMError", "make_adapter", "cost", "time"]

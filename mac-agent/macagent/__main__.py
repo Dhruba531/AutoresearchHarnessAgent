@@ -130,7 +130,7 @@ def cmd_doctor(settings: Settings) -> int:
     else:
         line(bool(settings.api_key()), f"API key for {settings.provider}", f"Add it to {settings.home / 'env'} (chmod 600).")
     line(settings.can_see_screen, f"model {settings.model} can see the screen",
-         "Only Claude through an Anthropic key drives the screen; with DeepSeek, OpenAI, OpenRouter or a "
+         "Only Claude through an Anthropic key drives the screen; with Gemini, DeepSeek, OpenAI, OpenRouter or a "
          "local model Relay uses the native Mac tools only.")
     line(tailscale_name() is not None or None, "Tailscale (for secure access from anywhere)",
          "Install Tailscale on the Mac and phone, then `tailscale serve --bg 8765`.")
@@ -196,7 +196,7 @@ def cmd_serve(settings: Settings) -> None:
     machines = MachineRegistry(store, host)  # this Mac (if any) + daemons on other machines
     light = lambda: make_router_adapter(settings)  # noqa: E731
     # Worker layer: strongest model, isolated context per task, parallel, a screen lease per machine.
-    agent = Agent(settings, store, machines, lambda: make_adapter(settings))
+    agent = Agent(settings, store, machines, lambda: make_adapter(settings), light_factory=light)
     # Event triggers → two-stage filter (code, then policies on a light model) → router.
     triggers = Triggers(store, host, settings) if host else None
     router = Router(settings, store, agent, light, triggers, Filter(store, light))
@@ -222,8 +222,10 @@ def cmd_serve(settings: Settings) -> None:
         # Keep the Mac awake (not the display) while Relay runs, so tasks and phone access keep working.
         caffeinate = subprocess.Popen(["caffeinate", "-is", "-w", str(os.getpid())])
 
+    from .llm import keep_warm
+
     def background():
-        return [bot.run()] if bot else []
+        return ([bot.run()] if bot else []) + [keep_warm(settings)]
 
     app = create_app(settings, store, agent, background, router=router, triggers=triggers, watchdog=watchdog)
     from .auth import list_devices
@@ -247,7 +249,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--port", type=int)
     s.add_argument("--fake-host", action="store_true", help="virtual desktop instead of this machine")
     s.add_argument("--policy", choices=["careful", "balanced", "autonomous"])
-    s.add_argument("--provider", choices=["anthropic", "deepseek", "openai", "openrouter", "local"])
+    s.add_argument("--provider", choices=["anthropic", "deepseek", "openai", "openrouter", "gemini", "local"])
     s.add_argument("--model")
     sub.add_parser("pair", help="print a one-time code to pair a phone or Telegram chat")
     sub.add_parser("doctor", help="check permissions and configuration")

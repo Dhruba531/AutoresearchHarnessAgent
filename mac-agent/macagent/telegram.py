@@ -53,6 +53,7 @@ class TelegramBot:
         self.router = router
         self.me: dict | None = None
         self.roots: dict[tuple[int, int], int] = {}  # (chat, message) → root message of its reply chain
+        self.typing: dict[int, asyncio.Task] = {}  # chat → "typing…" kept alive until Relay answers
 
     # -- plumbing --------------------------------------------------------------------
     async def call(self, method: str, **params) -> dict:
@@ -61,6 +62,32 @@ class TelegramBot:
         if not data.get("ok"):
             raise RuntimeError(f"telegram {method}: {data.get('description')}")
         return data["result"]
+
+    def show_typing(self, chat: int, limit_s: float = 180) -> None:
+        """Telegram clears "typing…" after ~5 s; keep it up while Relay works for this chat."""
+        t = self.typing.get(chat)
+        if t and not t.done():
+            return
+
+        async def loop() -> None:
+            end = time.monotonic() + limit_s
+            while time.monotonic() < end:
+                try:
+                    await self.call("sendChatAction", chat_id=chat, action="typing")
+                except Exception:
+                    return
+                await asyncio.sleep(4.5)
+
+        self.typing[chat] = asyncio.create_task(loop())
+
+    def stop_typing(self, chat: int) -> None:
+        t = self.typing.pop(chat, None)
+        if t:
+            t.cancel()
+        # still working on something this chat asked for: keep showing it
+        origin = f"telegram:{chat}"
+        if any((self.store.task(tid) or {}).get("origin") == origin for tid in self.agent.running):
+            self.show_typing(chat)
 
     def chats(self) -> list[int]:
         return [r["chat_id"] for r in self.store.all("SELECT chat_id FROM telegram_chats")]
@@ -130,8 +157,8 @@ class TelegramBot:
             name = (msg.get("from") or {}).get("first_name") or "user"
             if group:
                 return await self.on_group(chat, msg, text, name)
+            self.show_typing(chat)
             self.router.human(f"telegram:{chat}", text, sender=name)
-            await self.call("sendChatAction", chat_id=chat, action="typing")
             return
         tid = self.agent.submit(text, source="telegram", origin=f"telegram:{chat}")
         sent = await self.say(chat, f"On it — task #{tid}. Reply to this message to add details.")
@@ -151,6 +178,8 @@ class TelegramBot:
         self.roots[(chat, msg.get("message_id"))] = root
         if username:
             text = re.sub(rf"@{re.escape(username)}\b", "", text, flags=re.I).strip() or text
+        if mentioned or to_bot:
+            self.show_typing(chat)
         self.router.human(f"telegram:{chat}", text, sender=sender, source=f"telegram-group:{chat}",
                           explicit=mentioned or to_bot, thread=f"tg:{chat}:{root}")
 
@@ -217,6 +246,7 @@ class TelegramBot:
         if not self.authorized(chat):
             return
         sent = await self.say(chat, text)
+        self.stop_typing(chat)
         if task_id:
             self.task_messages[(chat, sent["message_id"])] = task_id
 

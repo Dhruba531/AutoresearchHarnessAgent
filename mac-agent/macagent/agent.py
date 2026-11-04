@@ -166,10 +166,12 @@ def next_run(run_at: float, repeat: str) -> float:
 
 
 class Agent:
-    def __init__(self, settings: Settings, store: Store, host: Host | MachineRegistry, adapter_factory):
+    def __init__(self, settings: Settings, store: Store, host: Host | MachineRegistry, adapter_factory,
+                 light_factory=None):
         self.settings, self.store = settings, store
         self.machines = host if isinstance(host, MachineRegistry) else MachineRegistry(store, host)
         self.adapter_factory = adapter_factory
+        self.light_factory = light_factory  # the fast model, for quick tasks
         self.bus = Bus()
         self.notifiers: list[Notifier] = []
         self.listeners: list = []          # task ended → router
@@ -293,7 +295,8 @@ class Agent:
 
     # -- public API ----------------------------------------------------------------------
     def submit(self, prompt: str, *, source: str = "app", run_at: float | None = None, repeat: str | None = None,
-               origin: str | None = None, title: str | None = None, mode: str = "normal", machine: str | None = None) -> int:
+               origin: str | None = None, title: str | None = None, mode: str = "normal", machine: str | None = None,
+               quick: bool = False) -> int:
         """Queue a worker task. `origin` is the channel to report back to (e.g. "web", "telegram:42")."""
         if repeat and repeat not in REPEATS:
             raise ValueError(f"repeat must be one of {', '.join(REPEATS)}")
@@ -304,7 +307,8 @@ class Agent:
         if repeat and not run_at:
             run_at = time.time()
         tid = self.store.create_task(prompt, source=source, run_at=run_at, repeat=repeat, origin=origin, title=title,
-                                     provider=self.settings.provider, model=self.settings.model, mode=mode,
+                                     provider=self.settings.provider, mode=mode,
+                                     model=self.settings.router_model if quick and self.light_factory else self.settings.model,
                                      machine=machine, guidance=self.store.get("worker_guidance"))
         self._emit(tid, "created", {"prompt": prompt, "source": source, "run_at": run_at, "repeat": repeat, "mode": mode,
                                     "machine": machine})
@@ -590,7 +594,9 @@ class Agent:
             if queued:
                 history.append({"role": "user", "content": "\n\n".join(queued)})
             try:
-                adapter = self.adapter_factory()
+                quick = (self.light_factory is not None and task.get("model") == self.settings.router_model
+                         and self.settings.router_model != self.settings.model)
+                adapter = self.light_factory() if quick else self.adapter_factory()
             except LLMError as exc:
                 self._status(task_id, "failed", error=str(exc), ended_at=time.time())
                 return
