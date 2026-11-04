@@ -21,6 +21,7 @@ OpenAICompatAdapter serves DeepSeek and OpenAI with the native tools only.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -153,9 +154,10 @@ class OpenAICompatAdapter:
 
     can_see_screen = False
 
-    def __init__(self, provider: str, api_key: str, model: str, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, provider: str, api_key: str, model: str, transport: httpx.AsyncBaseTransport | None = None,
+                 base_url: str | None = None):
         self.provider, self.model, self.key = provider, model, api_key
-        self.base = BASE_URLS.get(provider, BASE_URLS["openai"])
+        self.base = (base_url or BASE_URLS.get(provider, BASE_URLS["openai"])).rstrip("/")
         self.transport = transport
 
     @staticmethod
@@ -211,8 +213,11 @@ class OpenAICompatAdapter:
         data = r.json()
         msg = (data.get("choices") or [{}])[0].get("message", {})
         content: list[dict] = []
-        if msg.get("content"):
-            content.append({"type": "text", "text": msg["content"]})
+        text = msg.get("content") or ""
+        if "<think>" in text:  # local reasoning models (Qwen3, DeepSeek-R1) put their thinking inline
+            text = re.sub(r"<think>.*?(</think>|$)", "", text, flags=re.S).strip()
+        if text:
+            content.append({"type": "text", "text": text})
         for call in msg.get("tool_calls") or []:
             try:
                 args = json.loads(call["function"].get("arguments") or "{}")
@@ -223,7 +228,12 @@ class OpenAICompatAdapter:
         tin, tout = int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
         hit = int(usage.get("prompt_cache_hit_tokens", 0))
         # OpenRouter reports what the call actually cost; otherwise price it from the table
-        usd = usage.get("cost") if isinstance(usage.get("cost"), (int, float)) else cost(self.model, tin - hit, tout, hit)
+        if self.provider == "local":
+            usd = 0.0  # runs on this Mac: no bill, and it must not eat the daily cap
+        elif isinstance(usage.get("cost"), (int, float)):
+            usd = usage["cost"]
+        else:
+            usd = cost(self.model, tin - hit, tout, hit)
         return Turn(content, "tool_use" if msg.get("tool_calls") else "end_turn", self.model, tin - hit, tout, hit, 0,
                     float(usd))
 
@@ -244,13 +254,15 @@ def make_router_adapter(settings) -> ClaudeAdapter | OpenAICompatAdapter:
     if settings.provider == "anthropic":
         return ClaudeAdapter(settings.anthropic_api_key, settings.router_model, "low", screen=False, features=set(),
                              max_tokens=4000)
-    return OpenAICompatAdapter(settings.provider, _compat_key(settings), settings.router_model)
+    return OpenAICompatAdapter(settings.provider, _compat_key(settings), settings.router_model,
+                               base_url=settings.local_base_url if settings.provider == "local" else None)
 
 
 def make_adapter(settings) -> ClaudeAdapter | OpenAICompatAdapter:
     if settings.provider == "anthropic":
         return ClaudeAdapter(settings.anthropic_api_key, settings.model, settings.effort)
-    return OpenAICompatAdapter(settings.provider, _compat_key(settings), settings.model)
+    return OpenAICompatAdapter(settings.provider, _compat_key(settings), settings.model,
+                               base_url=settings.local_base_url if settings.provider == "local" else None)
 
 
 __all__ = ["ClaudeAdapter", "OpenAICompatAdapter", "Turn", "LLMError", "make_adapter", "cost", "time"]

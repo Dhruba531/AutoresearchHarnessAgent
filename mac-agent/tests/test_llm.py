@@ -72,3 +72,36 @@ def test_openrouter_provider():
     # ids map onto the native price table when OpenRouter doesn't report a cost
     assert cost("anthropic/claude-opus-5.5", 1000, 100) == cost("claude-opus-5-5", 1000, 100)
     assert cost("deepseek/deepseek-chat", 1000, 100) == cost("deepseek-chat", 1000, 100)
+
+
+def test_local_provider_ollama():
+    import os, pathlib, tempfile
+    from macagent.config import Settings
+    from macagent.llm import make_adapter, make_router_adapter
+
+    seen = {}
+
+    def handler(req):
+        seen["url"], seen["auth"] = str(req.url), req.headers.get("authorization")
+        return httpx.Response(200, json={"choices": [{"message": {
+            "content": "<think>The user wants the date; call the tool.</think>\nChecking your calendar.",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "calendar_events", "arguments": "{}"}}]}}],
+            "usage": {"prompt_tokens": 5000, "completion_tokens": 400}})
+
+    env = {"RELAY_PROVIDER": "local", "RELAY_MODEL": "", "RELAY_ROUTER_MODEL": "", "RELAY_LOCAL_URL": "http://127.0.0.1:1234/v1/"}
+    old = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
+    try:
+        s = Settings(home=pathlib.Path(tempfile.mkdtemp()))
+    finally:
+        for k, v in old.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+    assert (s.model, s.router_model, s.api_key()) == ("qwen3:8b", "qwen3:8b", "local")  # no key needed
+    worker, light = make_adapter(s), make_router_adapter(s)
+    assert worker.base == light.base == "http://127.0.0.1:1234/v1"  # LM Studio here; Ollama by default
+    worker.transport = httpx.MockTransport(handler)
+    turn = asyncio.run(worker.step("SYS", [{"role": "user", "content": "what's on today"}], SPECS))
+    assert seen["url"] == "http://127.0.0.1:1234/v1/chat/completions" and seen["auth"] == "Bearer local"
+    assert turn.content[0] == {"type": "text", "text": "Checking your calendar."}  # inline thinking stripped
+    assert turn.content[1]["name"] == "calendar_events" and turn.stop_reason == "tool_use"
+    assert turn.cost_usd == 0.0  # local runs cost nothing and never trip the daily cap

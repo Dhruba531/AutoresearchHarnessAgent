@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -114,11 +115,23 @@ def cmd_doctor(settings: Settings) -> int:
         line(r.returncode == 0, "Automation of System Events",
              "Approve the macOS prompt, or System Settings → Privacy & Security → Automation.")
         line(subprocess.run(["pmset", "-g"], capture_output=True).returncode == 0, "pmset available")
-    key = settings.api_key()
-    line(bool(key), f"API key for {settings.provider}", f"Add it to {settings.home / 'env'} (chmod 600).")
+    if settings.provider == "local":
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(settings.local_base_url.rstrip("/") + "/models", timeout=5) as r:
+                names = [m.get("id") for m in json.load(r).get("data", [])]
+            line(True, f"local model server at {settings.local_base_url}")
+            line(settings.model in names, f"model {settings.model} is downloaded",
+                 f"ollama pull {settings.model}   (or set RELAY_MODEL to one of: {', '.join(names[:6]) or 'none'})")
+        except Exception:
+            line(False, f"local model server at {settings.local_base_url}",
+                 "Install Ollama from https://ollama.com/download and open it (or start LM Studio's server).")
+    else:
+        line(bool(settings.api_key()), f"API key for {settings.provider}", f"Add it to {settings.home / 'env'} (chmod 600).")
     line(settings.can_see_screen, f"model {settings.model} can see the screen",
-         "Only Claude through an Anthropic key drives the screen; with DeepSeek, OpenAI or OpenRouter "
-         "Relay uses the native Mac tools only.")
+         "Only Claude through an Anthropic key drives the screen; with DeepSeek, OpenAI, OpenRouter or a "
+         "local model Relay uses the native Mac tools only.")
     line(tailscale_name() is not None or None, "Tailscale (for secure access from anywhere)",
          "Install Tailscale on the Mac and phone, then `tailscale serve --bg 8765`.")
     return 0 if ok else 1
@@ -234,7 +247,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--port", type=int)
     s.add_argument("--fake-host", action="store_true", help="virtual desktop instead of this machine")
     s.add_argument("--policy", choices=["careful", "balanced", "autonomous"])
-    s.add_argument("--provider", choices=["anthropic", "deepseek", "openai", "openrouter"])
+    s.add_argument("--provider", choices=["anthropic", "deepseek", "openai", "openrouter", "local"])
     s.add_argument("--model")
     sub.add_parser("pair", help="print a one-time code to pair a phone or Telegram chat")
     sub.add_parser("doctor", help="check permissions and configuration")

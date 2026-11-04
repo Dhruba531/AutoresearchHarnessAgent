@@ -23,6 +23,29 @@ PORT="${RELAY_PORT:-8765}"
 say() { printf '\033[1m▸ %s\033[0m\n' "$*"; }
 die() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# Local model: Ollama serves an OpenAI-compatible API on 127.0.0.1:11434.
+setup_ollama() {
+  local model
+  model="$(grep '^RELAY_MODEL=' "$ENV_FILE" | cut -d= -f2- || true)"; model="${model:-qwen3:8b}"
+  OLLAMA="$(command -v ollama || true)"
+  [ -n "$OLLAMA" ] || { [ -x /Applications/Ollama.app/Contents/Resources/ollama ] && OLLAMA=/Applications/Ollama.app/Contents/Resources/ollama; } || true
+  if [ -z "$OLLAMA" ]; then
+    echo "  Ollama isn't installed. Download it from https://ollama.com/download (drag it to Applications),"
+    echo "  open it once, then run this script again. Relay will start now but answer only once Ollama runs."
+    return 0
+  fi
+  curl -fs http://127.0.0.1:11434/api/version >/dev/null 2>&1 || { open -a Ollama 2>/dev/null || (nohup "$OLLAMA" serve >/dev/null 2>&1 &); }
+  for _ in $(seq 1 20); do curl -fs http://127.0.0.1:11434/api/version >/dev/null 2>&1 && break; sleep 1; done
+  if "$OLLAMA" list 2>/dev/null | awk '{print $1}' | grep -qx "$model"; then
+    echo "  Model $model is ready."
+  else
+    say "Downloading $model (about 5 GB, once)"
+    "$OLLAMA" pull "$model" </dev/null || echo "  Download failed; run: ollama pull $model"
+  fi
+  echo "  Tip: a 16 GB Mac mini runs $model well. With 32 GB or more, a bigger model is smarter:"
+  echo "  add RELAY_MODEL=qwen3:32b to $ENV_FILE, run this again."
+}
+
 # Everything runs inside main(), so a half-downloaded script runs nothing and no
 # command can swallow the rest of it from stdin under `curl | bash`.
 main() {
@@ -87,12 +110,16 @@ main() {
     put OPENROUTER_API_KEY "$OLD"; put RELAY_PROVIDER openrouter; echo "  Moved your OpenRouter key to OPENROUTER_API_KEY."
   fi
   unset OLD
-  if ! grep -qE '^(ANTHROPIC|DEEPSEEK|OPENAI|OPENROUTER)_API_KEY=.+' "$ENV_FILE"; then
+  if [ "${RELAY_PROVIDER:-}" = local ]; then put RELAY_PROVIDER local; fi
+  if ! grep -qE '^(ANTHROPIC|DEEPSEEK|OPENAI|OPENROUTER)_API_KEY=.+|^RELAY_PROVIDER=local$' "$ENV_FILE"; then
     (: < /dev/tty) 2>/dev/null || die "No API key and no terminal to ask in. Re-run with ANTHROPIC_API_KEY=sk-ant-… in front of the command."
-    printf 'Paste your API key: Anthropic (sk-ant-…), OpenRouter (sk-or-…), OpenAI or DeepSeek. It is not shown: '
+    echo "  Paste an API key (Anthropic sk-ant-…, OpenRouter sk-or-…, OpenAI or DeepSeek),"
+    echo "  or type  local  to run a free model on this Mac with Ollama (nothing leaves the Mac)."
+    printf 'Key or local (not shown): '
     read -rs KEY < /dev/tty || die "Could not read the key."; echo
     [ -n "$KEY" ] || die "No key entered."
     case "$KEY" in
+      local|LOCAL|Local) put RELAY_PROVIDER local ;;
       sk-ant-*) put ANTHROPIC_API_KEY "$KEY"; put RELAY_PROVIDER anthropic ;;
       sk-or-*) put OPENROUTER_API_KEY "$KEY"; put RELAY_PROVIDER openrouter
          echo "  Saved as an OpenRouter key: Claude Opus 5.5 for tasks, Haiku 5.5 for chat. Through OpenRouter Relay"
@@ -113,7 +140,12 @@ main() {
     esac
     unset KEY
   fi
-  say "Key saved in $ENV_FILE (owner-only)"
+  if grep -q '^RELAY_PROVIDER=local$' "$ENV_FILE"; then
+    say "Using a local model (Ollama)"
+    setup_ollama
+  else
+    say "Key saved in $ENV_FILE (owner-only)"
+  fi
 
   # 4. Permissions check (macOS asks for these once).
   say "Checking macOS permissions"
