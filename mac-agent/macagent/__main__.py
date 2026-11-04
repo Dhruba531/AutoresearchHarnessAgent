@@ -28,18 +28,46 @@ def lan_ip() -> str | None:
         return None
 
 
-def tailscale_name() -> str | None:
-    exe = shutil.which("tailscale") or "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
-    if not os.path.exists(exe):
-        return None
-    try:
-        import json
+TAILSCALE_PATHS = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/usr/local/bin/tailscale",
+                   "/opt/homebrew/bin/tailscale"]
 
-        out = subprocess.run([exe, "status", "--json"], capture_output=True, text=True, timeout=5).stdout
-        name = json.loads(out).get("Self", {}).get("DNSName", "").rstrip(".")
-        return name or None
-    except Exception:
+
+def tailscale_exe() -> str | None:
+    """The Tailscale command line. A LaunchAgent's PATH is short, so look in the usual places too."""
+    for c in [shutil.which("tailscale"), *TAILSCALE_PATHS]:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
+def tailscale_name() -> str | None:
+    """This Mac's Tailscale name (dhrubas-mac-mini.tail1234.ts.net), or None. Says why in the log."""
+    import json
+
+    exe = tailscale_exe()
+    if exe is None:
+        logging.getLogger("relay").info("tailscale: not installed")
         return None
+    for args in (["status", "--json"], ["serve", "status"]):
+        try:
+            r = subprocess.run([exe, *args], capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logging.getLogger("relay").warning("tailscale %s: %s", " ".join(args), exc)
+            continue
+        out = r.stdout or ""
+        if args[0] == "status" and "{" in out:
+            try:  # a version warning may come before the JSON
+                name = json.loads(out[out.index("{"):]).get("Self", {}).get("DNSName", "").rstrip(".")
+                if name:
+                    return name
+            except ValueError:
+                pass
+        m = re.search(r"https://([a-z0-9-]+(?:\.[a-z0-9-]+)*\.ts\.net)", out)
+        if m:
+            return m.group(1)
+        logging.getLogger("relay").warning("tailscale %s gave no name (exit %s): %s", " ".join(args), r.returncode,
+                                           (r.stderr or out).strip()[:200])
+    return None
 
 
 def print_qr(url: str) -> None:
@@ -157,7 +185,8 @@ def cmd_doctor(settings: Settings) -> int:
     line(settings.can_see_screen, f"model {settings.model} can see the screen",
          "Only Claude through an Anthropic key drives the screen; with Gemini, DeepSeek, OpenAI, OpenRouter or a "
          "local model Relay uses the native Mac tools only.")
-    line(tailscale_name() is not None or None, "Tailscale (for secure access from anywhere)",
+    ts = tailscale_name()
+    line(ts is not None or None, f"Tailscale (for secure access from anywhere){': https://' + ts if ts else ''}",
          "Install Tailscale on the Mac and phone, then `tailscale serve --bg 8765`.")
     return 0 if ok else 1
 
@@ -267,7 +296,7 @@ def cmd_serve(settings: Settings) -> None:
             return os.environ.get("RELAY_PUBLIC_URL") or (f"https://{ts}" if ts else None)
 
         bot = TelegramBot(settings.telegram_token, agent, store, router=router, models=models, app_url=app_url,
-                          public=os.environ.get("RELAY_PUBLIC") == "1" or bool(os.environ.get("RELAY_PUBLIC_URL")))
+                          public=os.environ.get("RELAY_PUBLIC") == "1")
         agent.notifiers.append(bot)
         router.add_channel(bot)
 
