@@ -120,17 +120,28 @@ main() {
   RELAY_HOME="$HOME_DIR" "$VPY" -m macagent doctor || true
   REAL_PY="$("$VPY" -c 'import os, sys; print(os.path.realpath(sys.executable))')"
 
-  # 5. Start at login, keep running.
+  # 5. How the phone reaches it. Tailscale is private and works anywhere; without it,
+  #    Relay listens only on this Mac unless you allow your Wi-Fi.
+  TS="$(command -v tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tailscale)"
+  TS_ON=""
+  if [ -x "$TS" ] && "$TS" status >/dev/null 2>&1; then TS_ON=1; fi
+  if [ -z "$TS_ON" ] && ! grep -q '^RELAY_BIND=' "$ENV_FILE"; then
+    echo "  Tailscale isn't set up, so right now only this Mac can open Relay."
+    if (: < /dev/tty) 2>/dev/null; then
+      printf 'Let phones on this Wi-Fi reach Relay? Only do this on your home network. [Y/n]: '
+      read -r ANS < /dev/tty || ANS=n
+      case "$ANS" in [nN]*) echo "  Kept private to this Mac." ;; *) put RELAY_BIND 0.0.0.0 ;; esac
+    fi
+  fi
+
+  # 6. Start at login, keep running (restarts it, so new settings apply).
   say "Starting Relay (and at every login)"
   RELAY_HOME="$HOME_DIR" "$VPY" -m macagent install-launchagent >/dev/null
-
-  # 6. Reach it from your phone, privately, over Tailscale.
-  TS="$(command -v tailscale || echo /Applications/Tailscale.app/Contents/MacOS/Tailscale)"
-  if [ -x "$TS" ] && "$TS" status >/dev/null 2>&1; then
-    "$TS" serve --bg "$PORT" >/dev/null 2>&1 && say "Shared on your tailnet (tailscale serve $PORT)" || true
-  else
-    echo "  Tailscale not found or not signed in: the phone works on the same Wi-Fi only."
-    echo "  For anywhere access, install Tailscale on the Mac and phone, then run this script again."
+  if [ -n "$TS_ON" ]; then
+    "$TS" serve --bg "$PORT" >/dev/null 2>&1 && say "Shared privately on your tailnet (works anywhere)" || true
+  elif grep -q '^RELAY_BIND=0.0.0.0' "$ENV_FILE"; then
+    say "Open to this Wi-Fi. If macOS asks whether python3 may accept incoming connections, click Allow."
+    echo "  To use it away from home: install Tailscale on the Mac and phone, sign in, run this again."
   fi
 
   # 7. Wait for it, then pair the phone.
