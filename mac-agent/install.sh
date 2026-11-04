@@ -134,6 +134,30 @@ main() {
     fi
   fi
 
+  # Telegram: talk to Relay from anywhere. Long polling, so nothing on the Mac is opened to the internet.
+  if [ -n "${RELAY_TELEGRAM_TOKEN:-}" ]; then put RELAY_TELEGRAM_TOKEN "$RELAY_TELEGRAM_TOKEN"; fi
+  if ! grep -q '^RELAY_TELEGRAM_TOKEN=.' "$ENV_FILE" && (: < /dev/tty) 2>/dev/null; then
+    echo "  Optional: control Relay from Telegram, from anywhere. In Telegram, message @BotFather,"
+    echo "  send /newbot, pick a name, and copy the token it gives you (looks like 123456789:AAE…)."
+    printf 'Telegram bot token (press Enter to skip; not shown): '
+    read -rs TG < /dev/tty || TG=""; echo
+    if [ -n "$TG" ]; then
+      if printf '%s' "$TG" | grep -qE '^[0-9]+:[A-Za-z0-9_-]{30,}$'; then put RELAY_TELEGRAM_TOKEN "$TG"
+      else echo "  That doesn't look like a bot token (123456789:AAE…); skipped. Run this again to retry."; fi
+    fi
+    unset TG
+  fi
+  BOT=""
+  if grep -q '^RELAY_TELEGRAM_TOKEN=.' "$ENV_FILE"; then
+    # the token goes to curl on stdin, not on the command line
+    TGT="$(grep '^RELAY_TELEGRAM_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
+    BOT="$(printf 'url = "https://api.telegram.org/bot%s/getMe"\n' "$TGT" | curl -fsS -m 15 -K - 2>/dev/null \
+           | sed -n 's/.*"username":"\([^"]*\)".*/\1/p' || true)"
+    unset TGT
+    if [ -n "$BOT" ]; then say "Telegram bot @$BOT connected"
+    else echo "  Telegram didn't accept the bot token. Check it in @BotFather, then run this again."; fi
+  fi
+
   # 6. Start at login, keep running (restarts it, so new settings apply).
   say "Starting Relay (and at every login)"
   RELAY_HOME="$HOME_DIR" "$VPY" -m macagent install-launchagent >/dev/null
@@ -155,6 +179,9 @@ main() {
   curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 || die "Relay did not start. See $HOME_DIR/relay.log"
   say "Relay is running"
   RELAY_HOME="$HOME_DIR" "$VPY" -m macagent pair
+  if [ -n "$BOT" ]; then
+    printf '\n\033[1mTelegram:\033[0m open https://t.me/%s on your phone, tap Start, and send the /pair line above.\n' "$BOT"
+  fi
 
   cat <<EOF
 

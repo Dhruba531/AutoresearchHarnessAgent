@@ -97,7 +97,9 @@ OpenRouter, OpenAI or DeepSeek
 checks permissions, starts Relay at login, shares it over Tailscale if you're
 signed in, and prints a pairing code and QR code for your phone. Run the same
 line again to update. To skip the key prompt, put `ANTHROPIC_API_KEY=sk-ant-…`
-(or `OPENROUTER_API_KEY=…`, `OPENAI_API_KEY=…`) before `bash`. The steps below do the same thing by hand.
+(or `OPENROUTER_API_KEY=…`, `OPENAI_API_KEY=…`) before `bash`. It also offers to
+connect a Telegram bot (token from @BotFather) so you can use Relay from anywhere
+without opening anything on the Mac. The steps below do the same thing by hand.
 
 ```bash
 git clone https://github.com/Dhruba531/AutoresearchHarnessAgent.git
