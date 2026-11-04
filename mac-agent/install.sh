@@ -235,6 +235,14 @@ main() {
     say "Sharing Relay on your tailnet. If Tailscale prints a link below, open it and click Enable"
     if "$TS" serve --bg "$PORT" </dev/null; then
       say "Shared privately on your tailnet: works from anywhere (uni, bus, mobile data)"
+      # Save the address for Relay: Tailscale's command line won't run from a background service on macOS.
+      TSNAME="$("$TS" status --json 2>/dev/null </dev/null | "$VPY" -c 'import json, sys
+d = sys.stdin.read()
+print(json.loads(d[d.index("{"):])["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)"
+      if [ -n "$TSNAME" ] && ! grep -qx "RELAY_PUBLIC_URL=https://$TSNAME" "$ENV_FILE"; then
+        put RELAY_PUBLIC_URL "https://$TSNAME"
+        launchctl kickstart -k "gui/$(id -u)/dev.relay.agent" >/dev/null 2>&1 || true  # pick it up now
+      fi
       # Optional: any browser, even a computer without Tailscale (Tailscale Funnel). Off unless you say yes.
       if [ -n "${RELAY_PUBLIC:-}" ]; then put RELAY_PUBLIC "$RELAY_PUBLIC"; fi
       if ! grep -q '^RELAY_PUBLIC=' "$ENV_FILE" && (: < /dev/tty) 2>/dev/null; then
@@ -247,7 +255,7 @@ main() {
       if grep -q '^RELAY_PUBLIC=1' "$ENV_FILE"; then
         say "Opening Relay to any browser. If Tailscale prints a link below, open it and allow Funnel"
         if "$TS" funnel --bg "$PORT" </dev/null; then
-          say "Open to any browser at https://$("$TS" status --json 2>/dev/null | sed -n 's/.*"DNSName": *"\([^"]*\)\.".*/\1/p' | head -1)"
+          say "Open to any browser at https://${TSNAME:-your-mac.ts.net}"
           echo "  Get a sign-in link any time: send /app to your Telegram bot. Turn it off: tailscale funnel reset"
         else
           echo "  Tailscale didn't turn Funnel on (see above). Allow it at the link it printed, then run this again."
