@@ -81,6 +81,8 @@ reach it and it opens its own.
 
 ## Set up on the Mac mini
 
+**Step-by-step guide with every Telegram command:** [GUIDE.md](GUIDE.md).
+
 Requirements: macOS 13 or later, Python 3.10 or later (`brew install python`),
 and an Anthropic API key.
 
