@@ -11,6 +11,11 @@ program's score autoresearch-style.
 > runs on your Mac mini and takes tasks, approvals and live screen control from your phone, built on DeepSeek's
 > Super-agent design: a router, isolated workers, a two-stage filter, Threads, Inline & Spill, background
 > workers, full-duplex jobs, machine daemons, and a Watchdog.
+>
+> [`research-agent/`](research-agent/README.md) — a **multi-agent web research system in Rust**, after
+> Anthropic's *How we built our multi-agent research system*: a lead researcher delegates to parallel search
+> subagents, a citation agent attributes every claim, and runs are checkpointed, resumable, traced and
+> evaluated with an LLM judge. Self-contained (its own Cargo workspace), so it can be moved out as-is.
 
 Two parts in one repo:
 

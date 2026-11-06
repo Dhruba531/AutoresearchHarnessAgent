@@ -1,0 +1,22 @@
+// A starter eval set: ~20 queries shaped like real use (simple facts, comparisons, depth and breadth).
+// Cases with "expected" are graded against that answer; the rest are graded on the rubric alone.
+{"id": "rust-1-0", "kind": "simple", "query": "When was version 1.0 of the Rust programming language released?", "expected": "15 May 2015."}
+{"id": "attention-paper", "kind": "simple", "query": "Who wrote the paper 'Attention Is All You Need', and in what year was it published?", "expected": "Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Łukasz Kaiser and Illia Polosukhin; 2017."}
+{"id": "speed-of-light", "kind": "simple", "query": "What is the speed of light in vacuum in metres per second, and why is the value exact?", "expected": "299,792,458 m/s, exact because the metre has been defined in terms of it since 1983."}
+{"id": "http-418", "kind": "simple", "query": "What does HTTP status code 418 mean and where was it defined?", "expected": "\"I'm a teapot\", from RFC 2324 (the Hyper Text Coffee Pot Control Protocol, an April Fools' RFC from 1998)."}
+{"id": "jwst-launch", "kind": "simple", "query": "When and from where was the James Webb Space Telescope launched, and on which rocket?", "expected": "25 December 2021, from Kourou, French Guiana, on an Ariane 5."}
+{"id": "solitude-novel", "kind": "simple", "query": "Who wrote 'One Hundred Years of Solitude' and when was it first published?", "expected": "Gabriel García Márquez; first published in 1967."}
+{"id": "highest-melting-element", "kind": "simple", "query": "Which metal has the highest melting point, and what is it?", "expected": "Tungsten, about 3,422 °C."}
+{"id": "everest-boiling", "kind": "simple", "query": "At roughly what temperature does water boil at the summit of Mount Everest, and why?", "expected": "Around 70 °C (roughly 68–72 °C), because air pressure at the summit is about a third of sea-level pressure."}
+{"id": "postgres-vs-sqlite", "kind": "comparison", "query": "Compare PostgreSQL and SQLite for a single-user desktop application: concurrency model, deployment and notable feature differences."}
+{"id": "rust-vs-go-memory", "kind": "comparison", "query": "How do Rust and Go differ in their approach to memory management, and what are the practical trade-offs?"}
+{"id": "http2-vs-http3", "kind": "comparison", "query": "Compare HTTP/2 and HTTP/3: transport protocol, head-of-line blocking, connection setup and current adoption."}
+{"id": "oss-licenses", "kind": "comparison", "query": "Compare the MIT, Apache 2.0 and GPLv3 licences, focusing on patent grants and copyleft obligations."}
+{"id": "raft", "kind": "depth", "query": "How does the Raft consensus algorithm handle leader election and log replication, and how does it guarantee safety?"}
+{"id": "chip-shortage", "kind": "depth", "query": "What caused the 2020–2023 global semiconductor shortage, and how did it affect the automotive industry?"}
+{"id": "fasting-evidence", "kind": "depth", "query": "What does the current scientific evidence say about intermittent fasting versus continuous calorie restriction for weight loss?"}
+{"id": "eu-ai-act", "kind": "breadth", "query": "Summarise the main obligations of the EU AI Act by risk category and the timeline on which they apply."}
+{"id": "vector-dbs", "kind": "breadth", "query": "What are the main open-source vector databases, and how do they differ in indexing methods, scaling model and licence?"}
+{"id": "container-ports", "kind": "breadth", "query": "Which are the five busiest container ports in the world by annual TEU throughput, with their most recent volumes?"}
+{"id": "solar-moons", "kind": "breadth", "query": "List the planets of the solar system with the number of confirmed moons each has, according to the latest official counts."}
+{"id": "rust-web-frameworks", "kind": "breadth", "query": "What are the most widely used Rust web frameworks today, and how do they compare in async runtime, ergonomics and maturity?"}

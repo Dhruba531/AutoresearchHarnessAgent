@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Research Agent</title>
+<style>
+  :root { --bg:#f7f7f5; --panel:#fff; --text:#1d1d1b; --muted:#6b6b66; --line:#e3e2dd; --accent:#3b5bdb; --ok:#2b8a3e; --bad:#c92a2a; --code:#f1f0ec; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#151514; --panel:#1e1e1c; --text:#ecebe6; --muted:#a3a29c; --line:#33322f; --accent:#7c94f5; --ok:#69db7c; --bad:#ff8787; --code:#2a2a27; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding:16px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  header span { color:var(--muted); font-size:13px; }
+  main { display:grid; grid-template-columns:minmax(220px, 320px) 1fr; gap:16px; padding:16px; max-width:1400px; margin:0 auto; }
+  @media (max-width: 800px) { main { grid-template-columns:1fr; } }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; min-width:0; }
+  textarea { width:100%; min-height:90px; font:inherit; padding:10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--text); resize:vertical; }
+  button { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
+  button.secondary { background:transparent; color:var(--accent); }
+  .runs { list-style:none; margin:12px 0 0; padding:0; }
+  .runs li { padding:8px; border-radius:8px; cursor:pointer; border:1px solid transparent; }
+  .runs li:hover, .runs li.active { border-color:var(--line); background:var(--bg); }
+  .runs .q { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .meta { color:var(--muted); font-size:12px; }
+  .status-done { color:var(--ok); } .status-failed, .status-interrupted { color:var(--bad); }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
+  .chip { font-size:12px; border:1px solid var(--line); border-radius:999px; padding:2px 10px; }
+  #log { font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; background:var(--code); border-radius:8px; padding:10px; max-height:260px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+  #report { overflow-wrap:anywhere; }
+  #report table { border-collapse:collapse; display:block; overflow-x:auto; }
+  #report td, #report th { border:1px solid var(--line); padding:4px 8px; }
+  #report code { background:var(--code); padding:1px 4px; border-radius:4px; }
+  #report a { color:var(--accent); }
+  h2.section { font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:18px 0 8px; }
+</style>
+</head>
+<body>
+<header><h1>Research Agent</h1><span>lead researcher · parallel subagents · citations</span></header>
+<main>
+  <section class="panel">
+    <form id="start">
+      <textarea id="query" placeholder="Ask a research question…" required></textarea>
+      <div style="margin-top:8px; display:flex; gap:8px;"><button type="submit">Research</button></div>
+    </form>
+    <h2 class="section">Runs</h2>
+    <ul class="runs" id="runs"></ul>
+  </section>
+  <section class="panel" id="detail">
+    <p class="meta">Start a run or pick one from the list.</p>
+  </section>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+let token = ""; try { token = localStorage.getItem("ra-token") || ""; } catch (_) {}
+let current = null, source = null;
+
+function withToken(url) { return token ? url + (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token) : url; }
+async function api(path, opts = {}) {
+  const r = await fetch(withToken(path), { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
+  if (r.status === 401) {
+    token = prompt("Access token (RESEARCH_AGENT_TOKEN):") || "";
+    try { localStorage.setItem("ra-token", token); } catch (_) {}
+    return api(path, opts);
+  }
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+// A small Markdown renderer that escapes everything first, so report text can never inject HTML.
+function inline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+}
+function markdown(md) {
+  const lines = String(md || "").split("\n"); let html = "", list = null, para = [], table = [];
+  const flushPara = () => { if (para.length) { html += "<p>" + inline(para.join(" ")) + "</p>"; para = []; } };
+  const flushList = () => { if (list) { html += `</${list}>`; list = null; } };
+  const flushTable = () => {
+    if (!table.length) return;
+    const rows = table.filter((r) => !/^\s*\|?\s*:?-{2,}/.test(r)).map((r) => r.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|"));
+    html += "<table>" + rows.map((r, i) => "<tr>" + r.map((c) => (i ? "<td>" : "<th>") + inline(c.trim()) + (i ? "</td>" : "</th>")).join("") + "</tr>").join("") + "</table>";
+    table = [];
+  };
+  for (const line of lines) {
+    if (/^\s*\|/.test(line)) { flushPara(); flushList(); table.push(line); continue; } else flushTable();
+    const h = line.match(/^(#{1,4})\s+(.*)/);
+    const ul = line.match(/^\s*[-*]\s+(.*)/), ol = line.match(/^\s*\d+\.\s+(.*)/);
+    if (h) { flushPara(); flushList(); html += `<h${h[1].length + 1}>${inline(h[2])}</h${h[1].length + 1}>`; }
+    else if (ul || ol) { flushPara(); const kind = ul ? "ul" : "ol"; if (list !== kind) { flushList(); html += `<${kind}>`; list = kind; } html += "<li>" + inline((ul || ol)[1]) + "</li>"; }
+    else if (/^\s*>/.test(line)) { flushPara(); flushList(); html += "<blockquote>" + inline(line.replace(/^\s*>\s?/, "")) + "</blockquote>"; }
+    else if (!line.trim()) { flushPara(); flushList(); }
+    else para.push(line.trim());
+  }
+  flushPara(); flushList(); flushTable();
+  return html;
+}
+
+async function loadRuns() {
+  try {
+    const runs = await api("/api/runs");
+    $("#runs").innerHTML = runs.slice(0, 50).map((r) => `<li data-id="${esc(r.id)}" class="${r.id === current ? "active" : ""}">
+      <div class="q">${esc(r.query)}</div>
+      <div class="meta"><span class="status-${esc(r.status)}">${esc(r.status)}</span> · $${Number(r.cost_usd || 0).toFixed(3)} · ${esc(r.created_at)}</div></li>`).join("");
+  } catch (e) { $("#runs").innerHTML = `<li class="meta">${esc(e.message)}</li>`; }
+}
+$("#runs").addEventListener("click", (e) => { const li = e.target.closest("li[data-id]"); if (li) open(li.dataset.id); });
+
+function describe(ev) {
+  const d = ev.data || {};
+  switch (ev.kind) {
+    case "run_started": return `▶ started: ${d.query || ""}`;
+    case "run_resumed": return `▶ resumed (${d.phase})`;
+    case "subagent_started": return `⇢ ${ev.agent}: ${d.title} (≤${d.tool_budget} tool calls)`;
+    case "subagent_done": return `✓ ${ev.agent} ${d.status} · ${d.tool_calls} tool calls · $${Number(d.usd || 0).toFixed(3)}`;
+    case "tool_call": return `  ${ev.agent} → ${d.tool}${d.input && (d.input.query || d.input.url) ? " “" + (d.input.query || d.input.url) + "”" : ""}${d.ok === false ? " ✗" : ""}`;
+    case "handoff": return `↻ lead context reset (${d.prompt_tokens} tokens)`;
+    case "budget_warning": return `! ${d.message}`;
+    case "agent_error": return `✗ ${ev.agent}: ${d.message}`;
+    case "report_written": return `✎ report drafted`;
+    case "citations": return `❝ ${d.claims} claims cited from ${d.sources} sources`;
+    case "run_finished": return `■ ${d.status}: ${d.summary}`;
+    default: return null;
+  }
+}
+
+async function open(id) {
+  current = id; loadRuns();
+  if (source) source.close();
+  $("#detail").innerHTML = `<div id="head"></div><div class="chips" id="subs"></div><h2 class="section">Activity</h2><div id="log"></div><h2 class="section">Report</h2><div id="report" class="meta">No report yet.</div>`;
+  await refresh();
+  source = new EventSource(withToken(`/api/runs/${encodeURIComponent(id)}/events`));
+  source.onmessage = () => {};
+  const kinds = ["run_started","run_resumed","subagent_started","subagent_done","tool_call","handoff","budget_warning","agent_error","report_written","citations","run_finished"];
+  for (const k of kinds) source.addEventListener(k, (m) => {
+    const ev = JSON.parse(m.data), line = describe(ev); if (!line) return;
+    const log = $("#log"); if (!log) return;
+    log.textContent += line + "\n"; log.scrollTop = log.scrollHeight;
+    if (["subagent_done","report_written","run_finished","citations"].includes(k)) refresh();
+  });
+}
+
+async function refresh() {
+  if (!current) return;
+  const r = await api(`/api/runs/${encodeURIComponent(current)}`);
+  const m = r.meta;
+  $("#head").innerHTML = `<div><strong>${esc(m.query)}</strong></div>
+    <div class="meta"><span class="status-${esc(m.status)}">${esc(m.status)}</span> · phase ${esc(r.phase)} · $${Number(r.spend.usd || 0).toFixed(3)} · ${esc(m.lead_model)} → ${esc(m.subagent_model)} · search: ${esc(m.search_backend)}
+    ${(m.status === "failed" || m.status === "interrupted") && !r.running ? ' · <button class="secondary" id="resume">Resume</button>' : ""}</div>
+    ${m.error ? `<div class="meta status-failed">${esc(m.error)}</div>` : ""}`;
+  const btn = $("#resume"); if (btn) btn.onclick = async () => { await api(`/api/runs/${encodeURIComponent(current)}/resume`, { method: "POST" }); open(current); };
+  $("#subs").innerHTML = r.subagents.map((s) => `<span class="chip" title="${esc(s.id)}">${esc(s.title)} · ${esc(s.status)}</span>`).join("");
+  if (r.report) { const el = $("#report"); el.className = ""; el.innerHTML = markdown(r.report); }
+  loadRuns();
+}
+
+$("#start").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const q = $("#query").value.trim(); if (!q) return;
+  try { const { run_id } = await api("/api/runs", { method: "POST", body: JSON.stringify({ query: q }) }); $("#query").value = ""; open(run_id); }
+  catch (err) { alert(err.message); }
+});
+loadRuns(); setInterval(loadRuns, 10000);
+</script>
+</body>
+</html>

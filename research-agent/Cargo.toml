@@ -1,0 +1,42 @@
+[package]
+name = "research-agent"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "A multi-agent research system: a lead researcher plans, parallel search subagents investigate, a citation agent attributes every claim."
+license = "MIT"
+default-run = "research-agent"
+
+# Its own workspace root, so the folder can be moved out of this repository as-is.
+[workspace]
+
+[lib]
+name = "research_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "research-agent"
+path = "src/main.rs"
+
+[features]
+default = ["server"]
+server = ["dep:axum", "dep:tokio-stream"]
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "rustls-tls-native-roots"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time", "sync", "signal", "io-util"] }
+axum = { version = "0.8", optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
