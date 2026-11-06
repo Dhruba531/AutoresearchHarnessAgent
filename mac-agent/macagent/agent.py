@@ -86,7 +86,9 @@ request_approval and wait for the answer. Dedicated tools that change or send th
 - Never type passwords, card numbers or one-time codes unless the user gave them to you in this task for that \
 purpose. Never store secrets with remember.
 - If the task is ambiguous or needs information only the user has, use ask_user rather than guessing.
-- If the user declines an action, do not attempt it another way."""
+- If the user declines an action, do not attempt it another way.
+- Be quick: prefer one well-built step over many small tries. If you needed several attempts to get something \
+working in an app, call save_howto with what finally worked before you finish."""
 
 SILENT_ADDENDUM = """
 
@@ -120,6 +122,13 @@ WORKER_SPECS = [
           {"instructions": {"type": "string"}, "title": {"type": "string"},
            "quick": {"type": "boolean", "description": "a lookup or one- or two-step action: use the fast model"}},
           ["instructions"]),
+    _spec("save_howto", "Save the exact steps that worked in an app after trial and error (several attempts, or an "
+          "approach you had to discover), so the next task does it in one go. Include the working script or key "
+          "sequence verbatim. Saving the same app and goal again replaces it.",
+          {"app": {"type": "string", "description": "e.g. WhatsApp"},
+           "goal": {"type": "string", "description": "e.g. send a file to a contact"},
+           "steps": {"type": "string", "description": "the steps or script that worked, verbatim"}},
+          ["app", "goal", "steps"]),
     _spec("github_post", "Post on GitHub, after the user approves: a comment on an issue or pull request, or a "
           "pull request's description. Write GitHub markdown (## Summary, ## Details, ## Next steps).",
           {"repo": {"type": "string", "description": "owner/name"}, "number": {"type": "integer"},
@@ -198,6 +207,7 @@ class Agent:
         self.adapter_factory = adapter_factory
         self.light_factory = light_factory  # the fast model, for quick tasks
         self.timing: dict[int, dict] = {}  # task → time spent in the model and in Mac actions (for /speed)
+        self.grants: dict[int, set[tuple[str, str]]] = {}  # task → (tool, risk) the user allowed for the whole task
         self.bus = Bus()
         self.notifiers: list[Notifier] = []
         self.listeners: list = []          # task ended → router
@@ -308,6 +318,7 @@ class Agent:
 
     def _finished(self, tid: int, fut: asyncio.Task) -> None:
         self.running.pop(tid, None)
+        self.grants.pop(tid, None)  # "allow for this task" ends with the task
         self._record_timing(tid)
         task = self.store.task(tid)
         parent = _parent_of(task) if task else None
@@ -415,10 +426,15 @@ class Agent:
         self.store.update_task(task_id, status="running")
         self._emit(task_id, "status", {"status": "running"})
 
-    def decide(self, approval_id: int, approve: bool, answer: str | None, via: str) -> bool:
+    def decide(self, approval_id: int, approve: bool, answer: str | None, via: str, for_task: bool = False) -> bool:
+        """`for_task`: also let this task repeat this kind of action (same tool, same risk) without asking again.
+        Never for high-risk actions, and only until the task ends."""
         appr = self.store.approval(approval_id)
         if appr is None:
             return False
+        if approve and for_task and appr["kind"] != "question" and appr["risk"] != "danger" \
+                and appr["status"] == "pending":
+            self.grants.setdefault(appr["task_id"], set()).add((appr["tool"], appr["risk"]))
         status = "answered" if appr["kind"] == "question" else ("approved" if approve else "denied")
         if not self.store.decide(approval_id, status, answer, via):
             return False
@@ -427,6 +443,12 @@ class Agent:
             fut.set_result((status, answer))
         self._emit(appr["task_id"], "decision", {"approval_id": approval_id, "status": status, "answer": answer, "via": via})
         return True
+
+    def howtos_for(self, text: str, limit: int = 3) -> list[dict]:
+        """Saved how-tos whose app the task mentions, newest first."""
+        t = text.lower()
+        hits = [h for h in self.store.get("howtos", []) if re.search(rf"\b{re.escape(h['app'].lower())}\b", t)]
+        return sorted(hits, key=lambda h: -h["at"])[:limit]
 
     def live_children(self, task_id: int) -> list[int]:
         rows = self.store.all("SELECT id FROM tasks WHERE origin=? AND status IN "
@@ -483,6 +505,11 @@ class Agent:
             lines.append("Threads you follow: " + " ".join(f"[thread:{t}]" for t in threads))
         if mem:
             lines.append("Things you remember about the user:\n" + "\n".join(f"- {m['text']}" for m in mem[-50:]))
+        hows = self.howtos_for(f"{task.get('title') or ''} {task['prompt']}")
+        if hows:
+            lines.append("How-tos saved by earlier tasks (try these first; if one no longer works, fix it and save the "
+                         "corrected version with save_howto):\n" + "\n".join(
+                             f"- {h['app']}: {h['goal']}\n{h['steps']}" for h in hows))
         return "<context>\n" + "\n".join(lines) + "\n</context>\n\n"
 
     def _system(self, task: dict) -> str:
@@ -641,6 +668,15 @@ class Agent:
                           "or end your turn to wait for it.")
         if name == "github_post":
             return await self._github_post(inp)
+        if name == "save_howto":
+            app, goal, steps = (str(inp.get(k, "")).strip() for k in ("app", "goal", "steps"))
+            if not app or not goal or not steps:
+                raise ToolError("app, goal and steps are all needed")
+            howtos = [h for h in self.store.get("howtos", [])
+                      if (h["app"].lower(), h["goal"].lower()) != (app.lower(), goal.lower())]
+            howtos.append({"app": app[:60], "goal": goal[:200], "steps": steps[:4000], "at": time.time(), "task": tid})
+            self.store.put("howtos", howtos[-60:])
+            return Result(f"Saved how to “{goal}” in {app}; later tasks get it up front.")
         if name == "discard":
             if task.get("mode") != "silent":
                 raise ToolError("discard is only for background tasks")
@@ -668,7 +704,10 @@ class Agent:
             return Result(f"The user {'declined' if status == 'denied' else 'did not respond to'} this action. "
                           "Do not do it." + (f" Note: {answer}" if answer else ""), is_error=True)
 
-        if needs_approval(self.settings.policy, tier):
+        granted = (name, tier) in self.grants.get(task["id"], set())
+        if granted and needs_approval(self.settings.policy, tier):
+            self._emit(task["id"], "decision", {"status": "approved", "via": "allowed for this task", "summary": summary})
+        if needs_approval(self.settings.policy, tier) and not granted:
             if silent and name not in SILENT_ALLOWED:
                 raise Denied("Background mode: this needs the user's approval, so don't do it now. List it in your "
                              "final report as a proposed action.")

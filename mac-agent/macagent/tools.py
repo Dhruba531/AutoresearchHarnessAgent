@@ -156,6 +156,8 @@ def classify(name: str, inp: dict, toolset: str | None, settings: Settings) -> t
         return "send", f"Post a GitHub {where} {inp.get('repo')}#{inp.get('number')}: {_short(inp.get('body', ''), 160)}"
     if name == "delegate":
         return "read", f"start a sub-worker: {_short(inp.get('title') or inp.get('instructions', ''), 120)}"
+    if name == "save_howto":
+        return "read", f"save how to {_short(inp.get('goal', ''), 80)} in {inp.get('app')}"
     if name == "hand_back":
         return "read", f"hand back {inp.get('event_id')}: {_short(inp.get('reason', ''), 100)}"
     if name in {"read", "subscribe_thread", "unsubscribe_thread", "discard", "job_stop"}:

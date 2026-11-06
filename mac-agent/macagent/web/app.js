@@ -222,7 +222,8 @@ function approvalCard(a) {
     <div class="summary">${esc(a.summary)}</div>
     ${task ? `<div class="muted small ellipsis">Task: ${esc(task.title)}</div>` : ""}
     <div class="btn-row"><button class="btn bad" data-act="deny" data-id="${a.id}">Deny</button>
-      <button class="btn good" data-act="approve" data-id="${a.id}">Approve</button></div></div>`;
+      <button class="btn good" data-act="approve" data-id="${a.id}">Approve</button></div>
+    ${a.risk !== "danger" ? `<button class="btn small" style="width:100%;margin-top:8px" data-act="approve-task" data-id="${a.id}">Approve, and allow for the rest of this task</button>` : ""}</div>`;
 }
 
 function taskRow(t) {
@@ -882,11 +883,11 @@ $app.addEventListener("click", async (e) => {
       }
       case "trig-delete": if (confirm("Delete this automation?")) { await api(`/api/triggers/${n}`, { method: "DELETE" }); loadSettings(); } return;
       case "toggle-sched": S.sched = !S.sched; render(); return;
-      case "approve": case "deny":
+      case "approve": case "deny": case "approve-task":
         el.disabled = true;
-        await api(`/api/approvals/${n}`, { method: "POST", body: { approve: act === "approve" } });
+        await api(`/api/approvals/${n}`, { method: "POST", body: { approve: act !== "deny", for_task: act === "approve-task" } });
         S.state.approvals = S.state.approvals.filter((a) => a.id !== n);
-        toast(act === "approve" ? "Approved" : "Denied"); return;
+        toast(act === "deny" ? "Denied" : act === "approve-task" ? "Approved for this task" : "Approved"); return;
       case "answer": {
         const v = document.getElementById(`answer-${n}`).value.trim();
         if (!v) return toast("Type an answer first");

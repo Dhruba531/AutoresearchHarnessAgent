@@ -194,7 +194,14 @@ You don't need commands for most things. Just write:
 - `use gemini`, `switch to claude`, or `change model to gpt nano` switches the AI model
 
 When Relay wants to **send, delete or change** something, it asks first with
-**✅ Approve / ⛔ Deny** buttons. **Reply** to one of its "On it — task #N"
+**✅ Approve / ⛔ Deny** buttons. **✅ Allow for this task** approves this one
+*and* lets the same task repeat that kind of action without asking again
+(handy when it needs several tries, e.g. driving WhatsApp). High-risk actions
+always ask, and the permission ends when the task does.
+
+Relay also learns: after something took several tries in an app, it saves the
+steps that worked ("how-tos"), and the next task in that app starts with them,
+so it's faster the second time. **Reply** to one of its "On it — task #N"
 messages to add details to that task. When it asks a question, reply to that
 message with your answer.
 

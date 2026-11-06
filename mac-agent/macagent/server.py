@@ -50,6 +50,7 @@ class MessageIn(BaseModel):
 
 class DecisionIn(BaseModel):
     approve: bool = True
+    for_task: bool = False  # also allow this kind of action for the rest of the task
     answer: str | None = Field(default=None, max_length=5_000)
 
 
@@ -256,7 +257,7 @@ def create_app(settings: Settings, store: Store, agent: Agent, extra_startup=Non
 
     @app.post("/api/approvals/{approval_id}")
     def decide(approval_id: int, body: DecisionIn, d: dict = Depends(device)) -> dict:
-        if not agent.decide(approval_id, body.approve, body.answer, f"app:{d['name']}"):
+        if not agent.decide(approval_id, body.approve, body.answer, f"app:{d['name']}", for_task=body.for_task):
             raise HTTPException(409, "Already decided or expired.")
         return store.approval(approval_id)
 

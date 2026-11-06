@@ -297,11 +297,13 @@ class TelegramBot(Commands):
             kind, aid, verdict = q.get("data", "").split(":")
         except ValueError:
             return await self.call("answerCallbackQuery", callback_query_id=q["id"])
-        ok = kind == "a" and self.agent.decide(int(aid), verdict == "1", None, "telegram")
+        yes = verdict in {"1", "2"}
+        ok = kind == "a" and self.agent.decide(int(aid), yes, None, "telegram", for_task=verdict == "2")
         await self.call("answerCallbackQuery", callback_query_id=q["id"],
-                        text=("Approved" if verdict == "1" else "Denied") if ok else "Already decided")
+                        text=("Approved" if yes else "Denied") if ok else "Already decided")
         if ok and q.get("message"):
-            label = "✅ Approved" if verdict == "1" else "⛔ Denied"
+            label = ("✅ Approved — and allowed for the rest of this task" if verdict == "2"
+                     else "✅ Approved" if yes else "⛔ Denied")
             await self.call("editMessageText", chat_id=chat, message_id=q["message"]["message_id"],
                             text=f"{q['message'].get('text', '')}\n\n{label}")
 
@@ -327,8 +329,11 @@ class TelegramBot(Commands):
                                       reply_markup={"force_reply": True, "selective": True})
                 self.question_messages[(chat, sent["message_id"])] = approval["id"]
             else:
-                buttons = {"inline_keyboard": [[{"text": "✅ Approve", "callback_data": f"a:{approval['id']}:1"},
-                                                 {"text": "⛔ Deny", "callback_data": f"a:{approval['id']}:0"}]]}
+                rows = [[{"text": "✅ Approve", "callback_data": f"a:{approval['id']}:1"},
+                         {"text": "⛔ Deny", "callback_data": f"a:{approval['id']}:0"}]]
+                if approval["risk"] != "danger":  # one tap for the rest of this task's steps like it
+                    rows.append([{"text": "✅ Allow for this task", "callback_data": f"a:{approval['id']}:2"}])
+                buttons = {"inline_keyboard": rows}
                 await self.say(chat, f"🔐 Approve ({approval['risk']})?\n{approval['summary']}\n\ntask #{task['id']}: "
                                      f"{task['title']}", reply_markup=buttons)
 
