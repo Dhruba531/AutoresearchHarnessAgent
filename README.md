@@ -81,10 +81,16 @@ on open agent harnesses such as DeepSeek Harness, where models, tools and
 skills are plugins, and DeerFlow, a lead agent with middleware, parallel
 sub-agents, skills and memory:
 
-* **Lead agent + sub-agents.** The lead plans and can `delegate` up to 3
-  tasks at once to `coder`, `analyst` or `researcher` sub-agents. Each
-  sub-agent works in its own sandbox folder with its own step budget and a
-  15-minute timeout, and reports back.
+* **Lead agent + sub-agents.** The lead plans, does simple work itself, and
+  can `delegate` up to 3 separable tasks at once to `coder`, `analyst` or
+  `researcher` sub-agents. Following Anthropic's "How we built our
+  multi-agent research system", each task has an `objective`, an
+  `output_format`, `boundaries` against the other tasks and an optional
+  `step_budget`, and the lead is told to scale the number of sub-agents to
+  the task and never to give two of them overlapping objectives. Each
+  sub-agent works in its own sandbox folder with a 15-minute timeout and
+  writes its full report to `agents/<name>/report.md`; the lead gets a
+  clipped summary and that path.
 * **Plugin tools.** `list_files`, `read_file`, `write_file`, `run_python`,
   `note`, `load_skill`, `remember`, `recall`, `delegate`, `finish`. Each is
   one registered class, so adding a tool takes one class.

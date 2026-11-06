@@ -155,6 +155,12 @@ def test_super_agent_delegates_in_parallel_and_remembers(client):
     assert any(t.startswith("coder-1.1:run_python") for t in tools)
     assert any(t.startswith("researcher-1.2:") for t in tools)
     assert run["analysis_json"]["execution"]["results"]["mean"] == 2.5
+    # the fake lead uses the original {role, goal} task form; each sub-agent's report lands in its folder
+    from backend.pipeline import run_dir
+
+    agents = run_dir(run["id"]) / "work" / "agents"
+    assert "mean=2.5000" in (agents / "coder-1.1" / "report.md").read_text()
+    assert "Main threat: n=4." in (agents / "researcher-1.2" / "report.md").read_text()
     # the memory written by this run is offered to the next one
     from backend.superagent import memories_for
     from backend.db import SessionLocal, Project
